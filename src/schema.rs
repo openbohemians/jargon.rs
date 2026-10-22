@@ -1,0 +1,327 @@
+//! Parsed schemas: a command's options as a tree of [`Property`] nodes.
+
+use std::fmt;
+
+use fancy_regex::Regex;
+use indexmap::IndexMap;
+use serde_json::{Map, Value};
+
+use crate::Error;
+
+/// The JSON Schema primitive types Jargon recognizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Type {
+    String,
+    Integer,
+    Number,
+    Boolean,
+    Array,
+    Object,
+    Null,
+}
+
+impl Type {
+    /// A `type` keyword's type; an unknown name is a string.
+    fn from_name(name: &str) -> Type {
+        match name.to_lowercase().as_str() {
+            "integer" => Type::Integer,
+            "number" => Type::Number,
+            "boolean" => Type::Boolean,
+            "array" => Type::Array,
+            "object" => Type::Object,
+            "null" => Type::Null,
+            _ => Type::String,
+        }
+    }
+
+    /// The type's name as messages write it (`"Integer"`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Type::String => "String",
+            Type::Integer => "Integer",
+            Type::Number => "Number",
+            Type::Boolean => "Boolean",
+            Type::Array => "Array",
+            Type::Object => "Object",
+            Type::Null => "Null",
+        }
+    }
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// A `pattern` keyword: its regex and the source it was compiled from.
+#[derive(Debug, Clone)]
+pub struct Pattern {
+    source: String,
+    regex: Regex,
+}
+
+impl Pattern {
+    /// The pattern as the schema wrote it.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Whether the pattern matches anywhere in `text`. An error means the
+    /// match ran past the backtracking limit, which only patterns with
+    /// lookaround or backreferences can.
+    pub fn matches(&self, text: &str) -> Result<bool, fancy_regex::Error> {
+        self.regex.is_match(text)
+    }
+}
+
+/// One node of a parsed schema: a single option, field, or positional, or
+/// the root object. It holds its type, validation constraints, CLI hints
+/// (`short`, `env`), nested `properties` and `items`, and any `x-`
+/// extensions a program defines.
+#[derive(Debug, Clone)]
+pub struct Property {
+    /// The field's key, `"items"` for an array's items, or `"root"`.
+    pub name: String,
+    /// The `type` keyword, or the type `properties` or `items` imply.
+    pub kind: Type,
+    pub description: Option<String>,
+    /// Whether the enclosing object's `required` list names this field.
+    pub required: bool,
+    pub default: Option<Value>,
+    /// The `enum` keyword.
+    pub enum_values: Option<Vec<Value>>,
+    pub properties: Option<IndexMap<String, Property>>,
+    pub items: Option<Box<Property>>,
+    /// The `$ref` keyword.
+    pub reference: Option<String>,
+    /// A one-letter flag (`-v`).
+    pub short: Option<String>,
+    /// An environment variable that supplies the value.
+    pub env: Option<String>,
+    pub minimum: Option<f64>,
+    pub maximum: Option<f64>,
+    pub exclusive_minimum: Option<f64>,
+    pub exclusive_maximum: Option<f64>,
+    pub multiple_of: Option<f64>,
+    pub min_length: Option<u64>,
+    pub max_length: Option<u64>,
+    pub min_items: Option<u64>,
+    pub max_items: Option<u64>,
+    pub unique_items: bool,
+    pub pattern: Option<Pattern>,
+    /// The `const` keyword.
+    pub constant: Option<Value>,
+    pub format: Option<String>,
+    pub additional_properties: Option<bool>,
+    /// A hint that the command runs a long-lived service.
+    pub service: bool,
+    /// Keys starting `x-`, kept as written for the program to read; parsing
+    /// and validation ignore them.
+    pub extensions: Map<String, Value>,
+}
+
+impl Property {
+    /// Build a property from a JSON Schema node. `name` is the field's key
+    /// (or `"root"`); `required` is the enclosing object's `required` list.
+    pub fn from_value(name: &str, json: &Value, required: &[String]) -> Result<Property, Error> {
+        let Some(obj) = json.as_object() else {
+            return Err(Error::Schema(format!("Schema '{name}' must be an object")));
+        };
+        let kind = resolve_type(name, obj)?;
+
+        Ok(Property {
+            name: name.to_owned(),
+            kind,
+            description: string(obj, "description"),
+            required: required.iter().any(|field| field == name),
+            default: obj.get("default").cloned(),
+            enum_values: obj.get("enum").and_then(Value::as_array).cloned(),
+            properties: parse_properties(kind, obj)?,
+            items: parse_items(kind, obj)?,
+            reference: string(obj, "$ref"),
+            short: string(obj, "short"),
+            env: string(obj, "env"),
+            minimum: obj.get("minimum").and_then(Value::as_f64),
+            maximum: obj.get("maximum").and_then(Value::as_f64),
+            exclusive_minimum: obj.get("exclusiveMinimum").and_then(Value::as_f64),
+            exclusive_maximum: obj.get("exclusiveMaximum").and_then(Value::as_f64),
+            multiple_of: obj.get("multipleOf").and_then(Value::as_f64),
+            min_length: obj.get("minLength").and_then(Value::as_u64),
+            max_length: obj.get("maxLength").and_then(Value::as_u64),
+            min_items: obj.get("minItems").and_then(Value::as_u64),
+            max_items: obj.get("maxItems").and_then(Value::as_u64),
+            unique_items: obj
+                .get("uniqueItems")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            pattern: parse_pattern(obj)?,
+            constant: obj.get("const").cloned(),
+            format: string(obj, "format"),
+            additional_properties: obj.get("additionalProperties").and_then(Value::as_bool),
+            service: obj.get("service").and_then(Value::as_bool).unwrap_or(false),
+            extensions: obj
+                .iter()
+                .filter(|(key, _)| key.starts_with("x-"))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        })
+    }
+}
+
+fn string(obj: &Map<String, Value>, key: &str) -> Option<String> {
+    obj.get(key).and_then(Value::as_str).map(String::from)
+}
+
+/// A keyword holding a list of names (`required`, `positional`).
+pub(crate) fn string_list(obj: &Map<String, Value>, key: &str) -> Result<Vec<String>, Error> {
+    let Some(value) = obj.get(key) else {
+        return Ok(Vec::new());
+    };
+    value
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .map(|item| item.as_str().map(String::from))
+                .collect()
+        })
+        .ok_or_else(|| Error::Schema(format!("'{key}' must be an array of strings")))
+}
+
+/// When `type` is omitted, `properties` or `items` imply it, as in JSON
+/// Schema: an omitted type isn't a string when the node has a shape.
+fn resolve_type(name: &str, obj: &Map<String, Value>) -> Result<Type, Error> {
+    let declared = obj.get("type").and_then(Value::as_str);
+    let implied = if obj.contains_key("properties") {
+        "object"
+    } else if obj.contains_key("items") {
+        "array"
+    } else {
+        "string"
+    };
+    let kind = Type::from_name(declared.unwrap_or(implied));
+
+    if let Some(declared) = declared {
+        if kind != Type::Object && obj.contains_key("properties") {
+            return Err(Error::Schema(format!(
+                "Schema '{name}' declares type '{declared}' but has 'properties' (did you mean type: object?)"
+            )));
+        }
+        if kind != Type::Array && obj.contains_key("items") {
+            return Err(Error::Schema(format!(
+                "Schema '{name}' declares type '{declared}' but has 'items' (did you mean type: array?)"
+            )));
+        }
+    }
+    Ok(kind)
+}
+
+fn parse_properties(
+    kind: Type,
+    obj: &Map<String, Value>,
+) -> Result<Option<IndexMap<String, Property>>, Error> {
+    let (Type::Object, Some(props)) = (kind, obj.get("properties")) else {
+        return Ok(None);
+    };
+    let Some(props) = props.as_object() else {
+        return Err(Error::Schema("'properties' must be an object".into()));
+    };
+    let required = string_list(obj, "required")?;
+    props
+        .iter()
+        .map(|(name, schema)| Ok((name.clone(), Property::from_value(name, schema, &required)?)))
+        .collect::<Result<_, _>>()
+        .map(Some)
+}
+
+fn parse_items(kind: Type, obj: &Map<String, Value>) -> Result<Option<Box<Property>>, Error> {
+    match (kind, obj.get("items")) {
+        (Type::Array, Some(items)) => {
+            Ok(Some(Box::new(Property::from_value("items", items, &[])?)))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn parse_pattern(obj: &Map<String, Value>) -> Result<Option<Pattern>, Error> {
+    let Some(source) = obj.get("pattern").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let regex = Regex::new(source)
+        .map_err(|e| Error::Schema(format!("Invalid pattern '{source}': {e}")))?;
+    Ok(Some(Pattern {
+        source: source.to_owned(),
+        regex,
+    }))
+}
+
+/// A parsed JSON Schema describing one command: its `root` property (the
+/// object whose properties are the command's options), the names of its
+/// `positional` arguments, and the `definitions` (`$defs`) that `$ref`
+/// resolves against.
+#[derive(Debug, Clone)]
+pub struct Schema {
+    pub root: Property,
+    pub definitions: IndexMap<String, Property>,
+    pub positional: Vec<String>,
+}
+
+impl Schema {
+    /// Build a schema from a JSON Schema document.
+    pub fn from_json(json: &str) -> Result<Schema, Error> {
+        let value: Value = serde_json::from_str(json).map_err(Error::syntax)?;
+        Schema::from_value(&value)
+    }
+
+    /// Build a schema from an already-parsed document. The whole document is
+    /// the root property; `positional` and `definitions`/`$defs` are lifted
+    /// out beside it.
+    pub fn from_value(json: &Value) -> Result<Schema, Error> {
+        let Some(obj) = json.as_object() else {
+            return Err(Error::Schema("A schema must be an object".into()));
+        };
+        let required = string_list(obj, "required")?;
+        let positional = string_list(obj, "positional")?;
+        let root = Property::from_value("root", json, &required)?;
+
+        let definitions = match obj.get("definitions").or_else(|| obj.get("$defs")) {
+            Some(defs) => defs
+                .as_object()
+                .ok_or_else(|| Error::Schema("'definitions' must be an object".into()))?
+                .iter()
+                .map(|(name, schema)| Ok((name.clone(), Property::from_value(name, schema, &[])?)))
+                .collect::<Result<_, Error>>()?,
+            None => IndexMap::new(),
+        };
+
+        Ok(Schema {
+            root,
+            definitions,
+            positional,
+        })
+    }
+
+    /// The definition a local `$ref` (`#/$defs/Name`) points to; None for a
+    /// pointer that isn't local or names nothing.
+    pub fn resolve_ref(&self, reference: &str) -> Option<&Property> {
+        let parts: Vec<&str> = reference.strip_prefix("#/")?.split('/').collect();
+        match parts.as_slice() {
+            ["definitions" | "$defs", name, ..] => self.definitions.get(*name),
+            _ => None,
+        }
+    }
+
+    /// The property itself, or what its `$ref` points to.
+    pub fn resolve<'a>(&'a self, prop: &'a Property) -> &'a Property {
+        prop.reference
+            .as_deref()
+            .and_then(|r| self.resolve_ref(r))
+            .unwrap_or(prop)
+    }
+
+    /// The root's properties, through its `$ref`.
+    pub(crate) fn properties(&self) -> Option<&IndexMap<String, Property>> {
+        self.resolve(&self.root).properties.as_ref()
+    }
+}

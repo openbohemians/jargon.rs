@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use crate::completion::{Completer, Shell};
 use crate::config::ConfigParser;
 use crate::schema::{Property, Schema, Type};
-use crate::validator::validate;
+use crate::validator::{validate, validate_except};
 use crate::values;
 use crate::{Error, ParseError, Parsed};
 
@@ -735,9 +735,11 @@ impl Cli {
         let filled = self.consume_tokens(args, schema, &mut data, &mut errors, context);
         init_empty_variadic(filled, schema, &mut data, &mut errors);
         apply_env_vars(&mut data, &mut errors, schema, context);
+        // Before defaults fill anything in, every value came from a token.
+        let unconverted = unconverted_fields(&data, schema.resolve(&schema.root), schema, "");
         apply_user_defaults(&mut data, context.defaults);
         apply_defaults(&mut data, schema);
-        errors.extend(validate(&data, schema));
+        errors.extend(validate_except(&data, schema, &unconverted));
         Parsed::new(data, errors)
     }
 
@@ -1202,6 +1204,57 @@ fn find_property<'a>(key: &str, schema: &'a Schema) -> Option<&'a Property> {
 /// A word as the value of the property at `key`: numbers and booleans
 /// coerced, a list split at commas, `~` expanded in a `format: path`
 /// string. A word that doesn't fit stays a string, with an error.
+/// The fields whose value didn't convert to the field's type. A token is a
+/// string, and converting one leaves a string in a number or boolean field
+/// only when it fails, which it reports; validating the value as well
+/// would report the same mistake again. So this runs on values that came
+/// from tokens alone, before defaults are filled in.
+fn unconverted_fields(
+    data: &Map<String, Value>,
+    parent: &Property,
+    schema: &Schema,
+    prefix: &str,
+) -> HashSet<String> {
+    let mut fields = HashSet::new();
+    let Some(props) = &parent.properties else {
+        return fields;
+    };
+    for (name, value) in data {
+        let Some(prop) = props.get(name).map(|prop| schema.resolve(prop)) else {
+            continue;
+        };
+        let path = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        let unconverted = match value {
+            Value::String(_) => converted_type(prop.kind),
+            Value::Array(items) => {
+                prop.kind == Type::Array
+                    && prop
+                        .items
+                        .as_deref()
+                        .is_some_and(|item| converted_type(schema.resolve(item).kind))
+                    && items.iter().any(Value::is_string)
+            }
+            Value::Object(nested) => {
+                fields.extend(unconverted_fields(nested, prop, schema, &path));
+                false
+            }
+            _ => false,
+        };
+        if unconverted {
+            fields.insert(path);
+        }
+    }
+    fields
+}
+
+fn converted_type(kind: Type) -> bool {
+    matches!(kind, Type::Integer | Type::Number | Type::Boolean)
+}
+
 fn coerce_value(
     key: &str,
     value: &str,

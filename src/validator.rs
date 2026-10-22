@@ -14,6 +14,17 @@ use crate::values::{self, format_num};
 /// Validate `data` against `schema`, returning every error (none when it
 /// is valid).
 pub fn validate(data: &Map<String, Value>, schema: &Schema) -> Vec<String> {
+    validate_except(data, schema, &HashSet::new())
+}
+
+/// [`validate`], except the fields in `skip` (paths such as
+/// `server.port`): those whose argument didn't convert to their type,
+/// which the parser has already reported.
+pub(crate) fn validate_except(
+    data: &Map<String, Value>,
+    schema: &Schema,
+    skip: &HashSet<String>,
+) -> Vec<String> {
     let mut errors = Vec::new();
     let root = schema.resolve(&schema.root);
     let Some(props) = &root.properties else {
@@ -22,7 +33,15 @@ pub fn validate(data: &Map<String, Value>, schema: &Schema) -> Vec<String> {
 
     check_additional_properties(data, root, &mut errors, "", props);
     for (name, prop) in props {
-        validate_property(data, name, schema.resolve(prop), &mut errors, "", schema);
+        validate_property(
+            data,
+            name,
+            schema.resolve(prop),
+            &mut errors,
+            "",
+            schema,
+            skip,
+        );
     }
     errors
 }
@@ -34,12 +53,16 @@ fn validate_property(
     errors: &mut Vec<String>,
     prefix: &str,
     schema: &Schema,
+    skip: &HashSet<String>,
 ) {
     let full_name = if prefix.is_empty() {
         name.to_owned()
     } else {
         format!("{prefix}.{name}")
     };
+    if skip.contains(&full_name) {
+        return;
+    }
     let Some(value) = data.get(name) else {
         if prop.required {
             errors.push(format!("Missing required field: {full_name}"));
@@ -53,7 +76,7 @@ fn validate_property(
     validate_numeric(value, prop, errors, &full_name);
     validate_string(value, prop, errors, &full_name);
     validate_array(value, prop, errors, &full_name);
-    validate_object(value, prop, errors, &full_name, schema);
+    validate_object(value, prop, errors, &full_name, schema, skip);
 }
 
 fn validate_array_item(value: &Value, prop: &Property, errors: &mut Vec<String>, label: &str) {
@@ -142,6 +165,7 @@ fn validate_object(
     errors: &mut Vec<String>,
     label: &str,
     schema: &Schema,
+    skip: &HashSet<String>,
 ) {
     let (Type::Object, Some(nested_props), Some(nested_data)) =
         (prop.kind, &prop.properties, value.as_object())
@@ -158,6 +182,7 @@ fn validate_object(
             errors,
             label,
             schema,
+            skip,
         );
     }
 }

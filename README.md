@@ -1,13 +1,13 @@
-# Jargon for Rust
+# Jargonaut
 
-Define a command-line interface with JSON Schema: the schema is the single
+Jargon for Rust. Define a command-line interface with JSON Schema: the schema is the single
 source of truth for a program's options, their types, validation,
 defaults, help, and shell completion. This is a port of [Jargon](https://github.com/trans/jargon)
 for Crystal, held to the same behavior by the cases that implementation's
 spec suite records.
 
 ```rust
-use jargon::Cli;
+use jargonaut::Cli;
 
 let cli = Cli::from_json(r#"{
     "type": "object",
@@ -33,9 +33,9 @@ such as a struct deriving `serde::Deserialize`.
 Options can also come from config files:
 
 ```rust
-use jargon::ParseOptions;
+use jargonaut::ParseOptions;
 
-let config = cli.load_config(); // ~/.config/greet.yaml, say
+let config = cli.load_config(); // ~/.config/greet.json, say
 let parsed = cli.run_with(&args, ParseOptions {
     defaults: config.as_ref(),
     ..ParseOptions::default()
@@ -51,23 +51,23 @@ Ported so far, with every recorded case for it passing:
   `--server.port`, typo suggestions, and options as JSON on standard input
   (`-`)
 - Subcommands: nested CLIs, defaults, abbreviations, and multi-document
-  JSON or YAML with `$id` mixins and `allOf`
-- Validation, as `jargon::validate` too, and defaults from the schema, the
+  JSON with `$id` mixins and `allOf`
+- Validation, as `jargonaut::validate` too, and defaults from the schema, the
   environment, and the caller (such as a config file)
-- Help text, and `jargon::merge` and `jargon::flatten`
+- Help text, and `jargonaut::merge` and `jargonaut::flatten`
 - Shell completion for bash, zsh, and fish, with completers for dynamic
   values
-- Config files (`load_config`) and `run`
+- Config files (`load_config`), in JSON or any format you add, and `run`
 
-That is all of the Crystal implementation's API.
+That is all of the Crystal implementation's API, except YAML.
 
 ## From Crystal
 
 | Crystal | Rust |
 |---|---|
-| `Jargon.cli("app", json: s)` | `Cli::from_json(s, "app")?` (also `from_yaml`, `from_file`) |
+| `Jargon.cli("app", json: s)` | `Cli::from_json(s, "app")?` (also `from_file`) |
 | `Jargon.new("app")` | `Cli::new("app")` |
-| `cli.subcommand("x", json: s)` | `cli.subcommand_json("x", s)?` (also `_yaml`, `_file`) |
+| `cli.subcommand("x", json: s)` | `cli.subcommand_json("x", s)?` (also `_file`) |
 | `cli.subcommand("x", other_cli)` | `cli.subcommand("x", other_cli)` (a `Cli` or a `Schema`) |
 | `cli.default_subcommand("x")` | `cli.set_default_subcommand("x")` |
 | `cli.parse(args, input, defaults: d)` | `cli.parse_with(&args, ParseOptions { stdin, defaults, env })` |
@@ -76,9 +76,10 @@ That is all of the Crystal implementation's API.
 | `cli.run(args)` | `cli.run(&args)` (also `run_with`) |
 | `cli.load_config(project: true)` | `cli.load_config_with(ConfigOptions { project: true, ..Default::default() })` |
 | `Jargon.config_warnings = false` | `ConfigOptions { warnings: false, .. }` |
+| `Jargon.cli("app", yaml: s)` | `Cli::from_values(docs, "app")?`, the YAML read with a library of your choice |
 | `cli.bash_completion` | `cli.completion_script(Shell::Bash)` |
 | `cli.handle_completion(args)` | `if cli.handle_completion(&args, &mut stdout)? { exit(0) }` |
-| `Jargon::Validator.validate(data, schema)` | `jargon::validate(&data, &schema)` |
+| `Jargon::Validator.validate(data, schema)` | `jargonaut::validate(&data, &schema)` |
 | `result.valid?` | `parsed.is_valid()` |
 
 Building a CLI returns a `Result` where Crystal raises. `defaults` is a
@@ -86,10 +87,26 @@ Building a CLI returns a `Result` where Crystal raises. `defaults` is a
 supply the environment, which the environment variables in a schema
 (`"env"`) are read from.
 
-YAML is the `yaml` feature, on by default, through
-[Oyl](https://github.com/openbohemians/oyl.rs), which needs a C compiler
-to build. The package is `jargon-cli`, since `jargon` is taken on
-crates.io; in code it is `jargon`.
+## YAML, TOML, and other formats
+
+Jargon reads JSON itself and leaves other formats to the library of
+your choice, so it doesn't pick one for you. For a schema in YAML, read
+its documents into `serde_json::Value`s and pass them to
+`Cli::from_values`: one document is the CLI's schema, and several are
+subcommands, as for multi-document JSON. (`Schema::from_value` makes a
+single subcommand's schema.)
+
+For config files, register the format's parser, and `load_config` looks
+for `greet.toml` alongside `greet.json`, ahead of it:
+
+```rust
+cli.config_format("toml", toml::from_str);
+```
+
+A parser is any function from the file's text to a `serde_json::Value`
+whose error displays, so a YAML library's `from_str` works the same way
+(registered for `yaml`, and `yml` too if you like). Registering `json` replaces the JSON parser, with
+one that allows comments, say.
 
 ## Conformance
 
@@ -114,10 +131,10 @@ Where this implementation deliberately differs:
   `"a@b.co\n"` isn't an email.
 - `inf`, `nan`, and numbers too large for a float are invalid numbers.
 - Help shows a default that isn't a string as JSON.
-- YAML is read as YAML 1.1, as Crystal reads it, except that dates stay
-  strings (`2026-10-22`) and `0o17` is a string.
+- No built-in YAML: schemas and config files are JSON unless you add a
+  format (see above), so `.yaml` and `.yml` configs aren't looked for
+  by default.
 - Arguments are UTF-8 (`&str`).
-- Without the `yaml` feature, config files are JSON only.
 
 ## License
 

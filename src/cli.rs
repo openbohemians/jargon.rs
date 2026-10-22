@@ -7,6 +7,7 @@ use indexmap::IndexMap;
 use serde_json::{Map, Value};
 
 use crate::completion::{Completer, Shell};
+use crate::config::ConfigParser;
 use crate::schema::{Property, Schema, Type};
 use crate::validator::validate;
 use crate::values;
@@ -61,7 +62,7 @@ struct Context<'a> {
 
 /// A command-line parser driven by one or more schemas. A CLI is either
 /// flat (one schema) or has subcommands, each a schema or a nested CLI.
-/// Build one with [`Cli::from_json`] (or YAML, or a file) or [`Cli::new`],
+/// Build one with [`Cli::from_json`] (or a file) or [`Cli::new`],
 /// then [`parse`](Cli::parse) arguments into a [`Parsed`], or get the
 /// validated data straight from [`json`](Cli::json).
 pub struct Cli {
@@ -72,6 +73,7 @@ pub struct Cli {
     subcommand_key: String,
     bare_assignment: bool,
     pub(crate) completers: IndexMap<String, Completer>,
+    pub(crate) config_formats: IndexMap<String, ConfigParser>,
 }
 
 impl std::fmt::Debug for Cli {
@@ -84,6 +86,10 @@ impl std::fmt::Debug for Cli {
             .field("subcommand_key", &self.subcommand_key)
             .field("bare_assignment", &self.bare_assignment)
             .field("completers", &self.completers.keys().collect::<Vec<_>>())
+            .field(
+                "config_formats",
+                &self.config_formats.keys().collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -101,6 +107,7 @@ impl Cli {
             subcommand_key: "subcommand".into(),
             bare_assignment: true,
             completers: IndexMap::new(),
+            config_formats: IndexMap::new(),
         }
     }
 
@@ -124,11 +131,30 @@ impl Cli {
         }
     }
 
-    /// A CLI from a YAML schema. Several documents are subcommands, each
-    /// named by its `name`, with `$id` mixins.
-    #[cfg(feature = "yaml")]
-    pub fn from_yaml(yaml: &str, program_name: impl Into<String>) -> Result<Cli, Error> {
-        let mut docs = crate::yaml::documents(yaml)?;
+    /// A CLI from schema documents already parsed, such as YAML read with a
+    /// library of your choice: one document is the CLI's schema, and
+    /// several are subcommands, each named by its `name`, with `$id`
+    /// mixins, as for [`from_json`](Cli::from_json).
+    ///
+    /// ```
+    /// use serde_json::json;
+    ///
+    /// let cli = jargonaut::Cli::from_values(
+    ///     [
+    ///         json!({"$id": "global", "properties": {"verbose": {"type": "boolean"}}}),
+    ///         json!({"name": "fetch", "allOf": [{"$ref": "global"}], "properties": {"url": {"type": "string"}}}),
+    ///     ],
+    ///     "app",
+    /// )?;
+    /// let parsed = cli.parse(&["fetch", "--verbose", "--url", "x"]);
+    /// assert_eq!(parsed.subcommand.as_deref(), Some("fetch"));
+    /// # Ok::<(), jargonaut::Error>(())
+    /// ```
+    pub fn from_values(
+        docs: impl IntoIterator<Item = Value>,
+        program_name: impl Into<String>,
+    ) -> Result<Cli, Error> {
+        let mut docs: Vec<Value> = docs.into_iter().collect();
         if docs.len() > 1 {
             let mut cli = Cli::new(program_name);
             cli.load_multi_docs(docs)?;
@@ -139,19 +165,13 @@ impl Cli {
         }
     }
 
-    /// A CLI from a schema file: YAML for a `.yaml` or `.yml` file, JSON
-    /// otherwise.
+    /// A CLI from a JSON schema file, as [`from_json`](Cli::from_json)
+    /// reads one.
     pub fn from_file(
         path: impl AsRef<Path>,
         program_name: impl Into<String>,
     ) -> Result<Cli, Error> {
-        let path = path.as_ref();
-        let content = std::fs::read_to_string(path)?;
-        if is_yaml_path(path) {
-            from_yaml_text(&content, program_name)
-        } else {
-            Cli::from_json(&content, program_name)
-        }
+        Cli::from_json(&std::fs::read_to_string(path)?, program_name)
     }
 
     /// Add a subcommand: a schema, or a nested CLI.
@@ -173,18 +193,7 @@ impl Cli {
         Ok(self.subcommand(name, Schema::from_json(json)?))
     }
 
-    /// Add a subcommand from a YAML schema.
-    #[cfg(feature = "yaml")]
-    pub fn subcommand_yaml(
-        &mut self,
-        name: impl Into<String>,
-        yaml: &str,
-    ) -> Result<&mut Cli, Error> {
-        let doc = crate::yaml::document(yaml)?;
-        Ok(self.subcommand(name, Schema::from_value(&doc)?))
-    }
-
-    /// Add a subcommand from a schema file. A file of several documents
+    /// Add a subcommand from a JSON schema file. A file of several objects
     /// becomes a nested CLI named `name`, with a subcommand per document.
     pub fn subcommand_file(
         &mut self,
@@ -203,8 +212,8 @@ impl Cli {
         }
     }
 
-    /// Add the subcommands in a file of several documents, each named by
-    /// its `name`.
+    /// Add the subcommands in a JSON file of several objects, each named
+    /// by its `name`.
     pub fn subcommands_file(&mut self, path: impl AsRef<Path>) -> Result<&mut Cli, Error> {
         let docs = read_documents(path.as_ref())?;
         if docs.len() < 2 {
@@ -303,37 +312,9 @@ impl Cli {
     }
 }
 
-#[cfg(feature = "yaml")]
-fn from_yaml_text(text: &str, program_name: impl Into<String>) -> Result<Cli, Error> {
-    Cli::from_yaml(text, program_name)
-}
-
-#[cfg(not(feature = "yaml"))]
-fn from_yaml_text(_text: &str, _program_name: impl Into<String>) -> Result<Cli, Error> {
-    Err(no_yaml())
-}
-
-#[cfg(not(feature = "yaml"))]
-fn no_yaml() -> Error {
-    Error::Usage("YAML schemas need jargon's `yaml` feature".into())
-}
-
-pub(crate) fn is_yaml_path(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("yaml" | "yml")
-    )
-}
-
 /// A schema file's documents.
 fn read_documents(path: &Path) -> Result<Vec<Value>, Error> {
     let content = std::fs::read_to_string(path)?;
-    if is_yaml_path(path) {
-        #[cfg(feature = "yaml")]
-        return crate::yaml::documents(&content);
-        #[cfg(not(feature = "yaml"))]
-        return Err(no_yaml());
-    }
     if multi_json(&content) {
         split_json_documents(&content)
     } else {

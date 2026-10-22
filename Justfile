@@ -1,4 +1,4 @@
-# Jargon (Rust) - Define your CLI jargon with JSON Schema
+# Jargonaut - Jargon for Rust: define your CLI jargon with JSON Schema
 
 # Default task
 default: test

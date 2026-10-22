@@ -2,7 +2,7 @@
 
 use std::io::Cursor;
 
-use jargon::{Cli, ConfigOptions, ParseOptions};
+use jargonaut::{Cli, ConfigOptions, ParseOptions};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -104,9 +104,9 @@ fn options_supply_defaults_environment_and_stdin() {
 fn reports_bad_schemas_as_errors() {
     let error = Cli::from_json(r#"{"type": "string", "properties": {}}"#, "app")
         .expect_err("a type mismatch");
-    assert!(matches!(error, jargon::Error::Schema(_)));
+    assert!(matches!(error, jargonaut::Error::Schema(_)));
     let error = Cli::from_json("{nope", "app").expect_err("not JSON");
-    assert!(matches!(error, jargon::Error::Syntax(_)));
+    assert!(matches!(error, jargonaut::Error::Syntax(_)));
     let error = Cli::from_json(r#"{"properties": {"a": {"pattern": "("}}}"#, "app")
         .expect_err("a bad pattern");
     assert!(

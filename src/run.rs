@@ -25,10 +25,10 @@ impl Cli {
     /// 1. Otherwise return the parse, which is valid.
     ///
     /// ```no_run
-    /// # let cli = jargon::Cli::from_json(r#"{"type": "object"}"#, "app")?;
+    /// # let cli = jargonaut::Cli::from_json(r#"{"type": "object"}"#, "app")?;
     /// let args: Vec<String> = std::env::args().skip(1).collect();
     /// let parsed = cli.run(&args);
-    /// # Ok::<(), jargon::Error>(())
+    /// # Ok::<(), jargonaut::Error>(())
     /// ```
     ///
     /// # Panics

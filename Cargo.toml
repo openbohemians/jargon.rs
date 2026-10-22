@@ -1,31 +1,20 @@
 [package]
-# `jargon` is taken on crates.io (a Jargon File viewer); the library is still
-# `jargon` in code.
-name = "jargon-cli"
+name = "jargonaut"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Define a command-line interface with JSON Schema: parsing, validation, defaults, help, and shell completion"
 license = "MIT"
+repository = "https://github.com/openbohemians/jargon.rs"
 authors = ["Thomas Sawyer <transfire@gmail.com>"]
 keywords = ["cli", "json-schema", "argument", "parser", "command-line"]
 categories = ["command-line-interface"]
 
-[lib]
-name = "jargon"
-
 [dependencies]
 fancy-regex = "0.19.2"
 indexmap = "2.14.2"
-# A path until the next oyl release is on crates.io.
-oyl = { version = "0.2.0", path = "../oyl.rs/oyl", optional = true }
 serde = "1.0.229"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
-
-[features]
-default = ["yaml"]
-# YAML schemas and multi-document YAML, through Oyl (builds C sources).
-yaml = ["dep:oyl"]
 
 [dev-dependencies]
 serde = { version = "1.0.229", features = ["derive"] }

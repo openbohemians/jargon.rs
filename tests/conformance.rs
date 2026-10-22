@@ -3,14 +3,12 @@
 //! each is a call with its inputs and what Crystal Jargon returned, replayed
 //! here against this implementation.
 
-#![cfg(feature = "yaml")] // the cases include YAML schemas
-
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use jargon::{Cli, ParseOptions, Schema};
+use jargonaut::{Cli, ParseOptions, Schema};
 use serde_json::{Map, Value, json};
 
 fn cases(kind: &str) -> Vec<Value> {
@@ -27,7 +25,47 @@ const DIFFERENCES: &[(&str, &str)] = &[(
     "a pattern without lookaround or backreferences runs in linear time here, so it never hits a limit",
 )];
 
-fn difference(case: &Value) -> Option<&'static str> {
+fn text<'a>(value: &'a Value, key: &str) -> &'a str {
+    value[key].as_str().unwrap_or_default()
+}
+
+/// A YAML source's documents, which it carries in JSON as well, since YAML
+/// isn't supported here.
+fn documents(op: &Value) -> Vec<Value> {
+    match &op["documents"] {
+        Value::Array(docs) => docs.clone(),
+        _ => panic!("YAML that didn't parse: {op}"),
+    }
+}
+
+/// A schema file's content as JSON. A YAML file's documents become objects
+/// one after another, which read as several documents too.
+fn source(op: &Value) -> String {
+    match op.get("documents") {
+        None => text(op, "text").to_owned(),
+        Some(Value::Array(docs)) if docs.is_empty() => "null".to_owned(),
+        Some(Value::Array(docs)) => {
+            let docs: Vec<String> = docs.iter().map(Value::to_string).collect();
+            docs.join("\n")
+        }
+        Some(_) => panic!("YAML that didn't parse: {op}"),
+    }
+}
+
+/// Whether a CLI's calls include YAML that didn't parse, which only a
+/// YAML parser can report on.
+fn unparsed_yaml(recipe: &Value) -> bool {
+    recipe.as_array().is_some_and(|ops| {
+        ops.iter()
+            .any(|op| op.get("documents").is_some_and(Value::is_null) || unparsed_yaml(&op["cli"]))
+    })
+}
+
+/// Why a case can't be replayed here, if it can't.
+fn skip_reason(case: &Value) -> Option<&'static str> {
+    if unparsed_yaml(&case["cli"]) {
+        return Some("YAML that doesn't parse, and YAML isn't supported here");
+    }
     let spec = case["spec"].as_str()?;
     DIFFERENCES
         .iter()
@@ -35,20 +73,16 @@ fn difference(case: &Value) -> Option<&'static str> {
         .map(|(_, why)| *why)
 }
 
-fn text<'a>(value: &'a Value, key: &str) -> &'a str {
-    value[key].as_str().unwrap_or_default()
-}
-
 /// A file holding `content`, for the calls that read schema files; removed
 /// when dropped.
 struct TempFile(PathBuf);
 
 impl TempFile {
-    fn new(ext: &str, content: &str) -> TempFile {
+    fn new(content: &str) -> TempFile {
         static COUNT: AtomicUsize = AtomicUsize::new(0);
         let n = COUNT.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "jargon-conformance-{}-{n}{ext}",
+            "jargonaut-conformance-{}-{n}.json",
             std::process::id()
         ));
         std::fs::write(&path, content).expect("write a schema file");
@@ -63,15 +97,15 @@ impl Drop for TempFile {
 }
 
 /// Rebuild a case's CLI from its recorded calls.
-fn build(recipe: &Value) -> Result<Cli, jargon::Error> {
+fn build(recipe: &Value) -> Result<Cli, jargonaut::Error> {
     let mut cli: Option<Cli> = None;
     for op in recipe.as_array().expect("a list of calls") {
         let (program, name) = (text(op, "program"), text(op, "name"));
         match text(op, "op") {
             "from_json" => cli = Some(Cli::from_json(text(op, "text"), program)?),
-            "from_yaml" => cli = Some(Cli::from_yaml(text(op, "text"), program)?),
+            "from_yaml" => cli = Some(Cli::from_values(documents(op), program)?),
             "from_file" => {
-                let file = TempFile::new(text(op, "ext"), text(op, "text"));
+                let file = TempFile::new(&source(op));
                 cli = Some(Cli::from_file(&file.0, program)?);
             }
             "from_schema" => {
@@ -87,14 +121,16 @@ fn build(recipe: &Value) -> Result<Cli, jargon::Error> {
                     "subcommand_json" => {
                         cli.subcommand_json(name, text(op, "text"))?;
                     }
+                    // A YAML subcommand is its first document.
                     "subcommand_yaml" => {
-                        cli.subcommand_yaml(name, text(op, "text"))?;
+                        let first = documents(op).into_iter().next().unwrap_or(Value::Null);
+                        cli.subcommand(name, Schema::from_value(&first)?);
                     }
                     "subcommand_schema" => {
                         cli.subcommand(name, Schema::from_json(text(op, "text"))?);
                     }
                     "subcommand_file" => {
-                        let file = TempFile::new(text(op, "ext"), text(op, "text"));
+                        let file = TempFile::new(&source(op));
                         if op["name"].is_null() {
                             cli.subcommands_file(&file.0)?;
                         } else {
@@ -188,7 +224,7 @@ impl Report {
 fn parse() {
     let mut report = Report::default();
     for case in cases("parse") {
-        if let Some(why) = difference(&case) {
+        if let Some(why) = skip_reason(&case) {
             report.skip(&case, why);
             continue;
         }
@@ -263,9 +299,13 @@ fn parse() {
 fn validate() {
     let mut report = Report::default();
     for case in cases("validate") {
+        if let Some(why) = skip_reason(&case) {
+            report.skip(&case, why);
+            continue;
+        }
         let data: Map<String, Value> = case["data"].as_object().cloned().unwrap_or_default();
         let result = if let Some(schema) = case["schema"].as_str() {
-            Schema::from_json(schema).map(|schema| jargon::validate(&data, &schema))
+            Schema::from_json(schema).map(|schema| jargonaut::validate(&data, &schema))
         } else {
             build(&case["cli"]).and_then(|cli| cli.validate(&data, case["subcommand"].as_str()))
         };
@@ -286,6 +326,10 @@ fn validate() {
 fn load() {
     let mut report = Report::default();
     for case in cases("load") {
+        if let Some(why) = skip_reason(&case) {
+            report.skip(&case, why);
+            continue;
+        }
         let result = match case["schema"].as_str() {
             Some(schema) => Schema::from_json(schema).map(|_| ()),
             None => build(&case["cli"]).map(|_| ()),
@@ -304,9 +348,9 @@ fn utility() {
     let mut report = Report::default();
     for case in cases("utility") {
         let result = if let Some([sub, global]) = case["merge"].as_array().map(Vec::as_slice) {
-            jargon::merge(sub.as_str().unwrap(), global.as_str().unwrap())
+            jargonaut::merge(sub.as_str().unwrap(), global.as_str().unwrap())
         } else {
-            jargon::flatten(text(&case, "flatten"))
+            jargonaut::flatten(text(&case, "flatten"))
         };
         let expect = &case["expect"];
         let ok = match (&result, expect.get("raises")) {
@@ -329,6 +373,10 @@ fn utility() {
 fn help() {
     let mut report = Report::default();
     for case in cases("help") {
+        if let Some(why) = skip_reason(&case) {
+            report.skip(&case, why);
+            continue;
+        }
         let result = build(&case["cli"]).map(|cli| match case["subcommand"].as_str() {
             Some(subcommand) => cli.help_for(subcommand),
             None => cli.help(),
@@ -352,6 +400,10 @@ fn help() {
 fn complete() {
     let mut report = Report::default();
     for case in cases("complete") {
+        if let Some(why) = skip_reason(&case) {
+            report.skip(&case, why);
+            continue;
+        }
         let words: Vec<&str> = case["words"]
             .as_array()
             .expect("words")
@@ -377,7 +429,11 @@ fn complete() {
 fn shim() {
     let mut report = Report::default();
     for case in cases("shim") {
-        let shell: jargon::Shell = text(&case, "shell").parse().expect("a shell");
+        if let Some(why) = skip_reason(&case) {
+            report.skip(&case, why);
+            continue;
+        }
+        let shell: jargonaut::Shell = text(&case, "shell").parse().expect("a shell");
         let result =
             build(&case["cli"]).map(|cli| cli.completion_script_for(shell, text(&case, "command")));
         let expect = &case["expect"];

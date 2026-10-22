@@ -3,7 +3,7 @@
 //! validation, defaults, help, and shell completion.
 //!
 //! ```
-//! let cli = jargon::Cli::from_json(r#"{
+//! let cli = jargonaut::Cli::from_json(r#"{
 //!     "type": "object",
 //!     "properties": {
 //!         "name": {"type": "string", "short": "n"},
@@ -16,10 +16,11 @@
 //! assert!(parsed.is_valid());
 //! assert_eq!(parsed.get("name").unwrap(), "World");
 //! assert_eq!(parsed.get("count").unwrap(), 1);
-//! # Ok::<(), jargon::Error>(())
+//! # Ok::<(), jargonaut::Error>(())
 //! ```
 //!
-//! This is a port of the [Crystal implementation](https://github.com/trans/jargon),
+//! Jargonaut is Jargon for Rust, a port of the
+//! [Crystal implementation](https://github.com/trans/jargon),
 //! held to the same behavior by the conformance cases its spec suite
 //! records (`tests/conformance`).
 
@@ -33,8 +34,6 @@ mod schema;
 mod utility;
 pub mod validator;
 mod values;
-#[cfg(feature = "yaml")]
-mod yaml;
 
 use std::fmt;
 
@@ -50,7 +49,7 @@ pub use validator::validate;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// A schema document isn't valid JSON or YAML.
+    /// A schema document isn't valid JSON.
     Syntax(String),
     /// A schema is well-formed but can't be used, such as a `$ref` to a
     /// mixin that doesn't exist.

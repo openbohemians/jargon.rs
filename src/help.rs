@@ -208,9 +208,6 @@ fn option_line(full_name: &str, prop: &Property) -> String {
     if prop.kind == Type::Boolean {
         format!("  {flag}{required}{default}")
     } else {
-        format!(
-            "  {flag}=<{}>{required}{default}",
-            prop.kind.name().to_lowercase()
-        )
+        format!("  {flag}=<{}>{required}{default}", prop.kind.name())
     }
 }

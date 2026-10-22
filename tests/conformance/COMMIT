@@ -1,1 +1,1 @@
-774e78dea6b6022925cf49a6fc3e983fd34a11e7 2026-10-22 Bump version to 0.22.0 and regenerate API docs
+dcc6ec5ebe1ae4a2690a37eb112dd5d689371f85 2026-10-22 Name schema types, not Crystal classes, in type errors

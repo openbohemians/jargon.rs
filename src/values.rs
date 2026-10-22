@@ -24,17 +24,17 @@ pub(crate) fn same(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// A value's type as Crystal names it, which type errors report
-/// ("got Int64").
+/// A value's type as a schema names it, which type errors report
+/// ("got object").
 pub(crate) fn type_name(value: &Value) -> &'static str {
     match value {
-        Value::Null => "Nil",
-        Value::Bool(_) => "Bool",
-        Value::Number(n) if n.is_f64() => "Float64",
-        Value::Number(_) => "Int64",
-        Value::String(_) => "String",
-        Value::Array(_) => "Array(JSON::Any)",
-        Value::Object(_) => "Hash(String, JSON::Any)",
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(n) if n.is_f64() => "number",
+        Value::Number(_) => "integer",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     }
 }
 

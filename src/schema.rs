@@ -34,16 +34,16 @@ impl Type {
         }
     }
 
-    /// The type's name as messages write it (`"Integer"`).
+    /// The type's name in a schema (`"integer"`), which messages use too.
     pub fn name(self) -> &'static str {
         match self {
-            Type::String => "String",
-            Type::Integer => "Integer",
-            Type::Number => "Number",
-            Type::Boolean => "Boolean",
-            Type::Array => "Array",
-            Type::Object => "Object",
-            Type::Null => "Null",
+            Type::String => "string",
+            Type::Integer => "integer",
+            Type::Number => "number",
+            Type::Boolean => "boolean",
+            Type::Array => "array",
+            Type::Object => "object",
+            Type::Null => "null",
         }
     }
 }

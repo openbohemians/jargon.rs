@@ -62,7 +62,7 @@ fn json_returns_the_data_or_the_errors() {
     let error = cli().json(&["--count", "two"]).expect_err("invalid");
     assert_eq!(
         error.to_string(),
-        "Invalid integer value 'two' for count\nMissing required field: name\nInvalid type for count: expected Integer, got String"
+        "Invalid integer value 'two' for count\nMissing required field: name\nInvalid type for count: expected integer, got string"
     );
 }
 

@@ -11,35 +11,46 @@ impl Cli {
     /// The program's help: its commands when it has subcommands, its
     /// options for a flat CLI, or a bare usage line otherwise.
     pub fn help(&self) -> String {
-        if !self.subcommands.is_empty() {
-            self.help_with_subcommands()
-        } else if let Some(schema) = &self.schema {
-            self.help_text(schema, None)
-        } else {
-            format!("Usage: {} <command> [options]", self.program_name)
-        }
+        self.help_as(&self.program_name)
     }
 
     /// One subcommand's help; a nested one is named with spaces
     /// (`"remote add"`).
     pub fn help_for(&self, subcommand: &str) -> String {
+        self.subcommand_help_as(&self.program_name, subcommand)
+    }
+
+    /// The help, with `command` (the program's name, then the subcommands
+    /// leading to this CLI when it is nested) in its usage lines.
+    fn help_as(&self, command: &str) -> String {
+        if !self.subcommands.is_empty() {
+            self.help_with_subcommands(command)
+        } else if let Some(schema) = &self.schema {
+            help_text(schema, command)
+        } else {
+            format!("Usage: {command} <command> [options]")
+        }
+    }
+
+    fn subcommand_help_as(&self, command: &str, subcommand: &str) -> String {
         let (name, rest) = match subcommand.split_once(' ') {
             Some((name, rest)) => (name, Some(rest)),
             None => (subcommand, None),
         };
+        let command = format!("{command} {name}");
         match self.subcommands.get(name) {
             Some(Subcommand::Cli(cli)) => match rest {
-                Some(rest) => cli.help_for(rest),
-                None => cli.help(),
+                Some(rest) => cli.subcommand_help_as(&command, rest),
+                None => cli.help_as(&command),
             },
-            Some(Subcommand::Schema(schema)) => self.help_text(schema, Some(name)),
+            Some(Subcommand::Schema(schema)) => help_text(schema, &command),
             None => format!("Unknown subcommand: {name}"),
         }
     }
 
-    fn help_with_subcommands(&self) -> String {
+    fn help_with_subcommands(&self, command: &str) -> String {
         let mut lines = vec![
-            format!("Usage: {} <command> [options]", self.program_name),
+            format!("Usage: {command} <command> [options]"),
             String::new(),
             "Commands:".into(),
         ];
@@ -72,57 +83,54 @@ impl Cli {
 
         lines.push(String::new());
         lines.push(format!(
-            "Run '{} <command> --help' for command-specific options.",
-            self.program_name
+            "Run '{command} <command> --help' for command-specific options."
         ));
         lines.join("\n")
     }
+}
 
-    fn help_text(&self, schema: &Schema, subcommand: Option<&str>) -> String {
-        let positional = &schema.positional;
-        let root = schema.resolve(&schema.root);
-        let props = root.properties.as_ref();
-        let mut lines = Vec::new();
+/// A schema's help, with `command` in its usage line.
+fn help_text(schema: &Schema, command: &str) -> String {
+    let positional = &schema.positional;
+    let root = schema.resolve(&schema.root);
+    let props = root.properties.as_ref();
+    let mut lines = Vec::new();
 
-        let mut usage = match subcommand {
-            Some(name) => vec![format!("Usage: {} {name}", self.program_name)],
-            None => vec![format!("Usage: {}", self.program_name)],
-        };
-        for name in positional {
-            let required = props
-                .and_then(|props| props.get(name))
-                .is_none_or(|prop| prop.required);
-            usage.push(if required {
-                format!("<{name}>")
-            } else {
-                format!("[{name}]")
-            });
-        }
-        usage.push("[options]".into());
-        lines.push(usage.join(" "));
-        lines.push(String::new());
-
-        if !positional.is_empty() {
-            lines.push("Arguments:".into());
-            for name in positional {
-                if let Some(prop) = props.and_then(|props| props.get(name)) {
-                    lines.push(format!(
-                        "  {name}    {}",
-                        prop.description.as_deref().unwrap_or_default()
-                    ));
-                }
-            }
-            lines.push(String::new());
-        }
-
-        lines.push("Options:".into());
-        for (name, prop) in props.into_iter().flatten() {
-            if !positional.contains(name) {
-                option_lines(&mut lines, name, prop, "", schema, &HashSet::new());
-            }
-        }
-        lines.join("\n")
+    let mut usage = vec![format!("Usage: {command}")];
+    for name in positional {
+        let required = props
+            .and_then(|props| props.get(name))
+            .is_none_or(|prop| prop.required);
+        usage.push(if required {
+            format!("<{name}>")
+        } else {
+            format!("[{name}]")
+        });
     }
+    usage.push("[options]".into());
+    lines.push(usage.join(" "));
+    lines.push(String::new());
+
+    if !positional.is_empty() {
+        lines.push("Arguments:".into());
+        for name in positional {
+            if let Some(prop) = props.and_then(|props| props.get(name)) {
+                lines.push(format!(
+                    "  {name}    {}",
+                    prop.description.as_deref().unwrap_or_default()
+                ));
+            }
+        }
+        lines.push(String::new());
+    }
+
+    lines.push("Options:".into());
+    for (name, prop) in props.into_iter().flatten() {
+        if !positional.contains(name) {
+            option_lines(&mut lines, name, prop, "", schema, &HashSet::new());
+        }
+    }
+    lines.join("\n")
 }
 
 fn name_width<'a>(names: impl Iterator<Item = &'a String>) -> usize {

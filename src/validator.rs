@@ -309,57 +309,62 @@ fn format_match(value: &str, regex: &Regex) -> bool {
 
 /// The RFC 5321 length cap keeps the repeated label group's work bounded.
 fn valid_format_email(value: &str) -> bool {
-    static EMAIL: LazyLock<Regex> = LazyLock::new(|| regex(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$"));
+    static EMAIL: LazyLock<Regex> = LazyLock::new(|| regex(r"\A[^@\s]+@[^@\s.]+(\.[^@\s.]+)+\z"));
     value.len() <= 254 && format_match(value, &EMAIL)
 }
 
 fn valid_format_uri(value: &str) -> bool {
-    static URI: LazyLock<Regex> = LazyLock::new(|| regex(r"(?i)^[a-z][a-z0-9+.-]*://.+$"));
+    static URI: LazyLock<Regex> = LazyLock::new(|| regex(r"(?i)\A[a-z][a-z0-9+.-]*://.+\z"));
     format_match(value, &URI)
 }
 
 fn valid_format_uuid(value: &str) -> bool {
     static UUID: LazyLock<Regex> = LazyLock::new(|| {
-        regex(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+        regex(r"(?i)\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z")
     });
     format_match(value, &UUID)
 }
 
 fn valid_format_date(value: &str) -> bool {
-    static DATE: LazyLock<Regex> = LazyLock::new(|| regex(r"^\d{4}-\d{2}-\d{2}$"));
+    static DATE: LazyLock<Regex> = LazyLock::new(|| regex(r"\A[0-9]{4}-[0-9]{2}-[0-9]{2}\z"));
     format_match(value, &DATE)
 }
 
 fn valid_format_time(value: &str) -> bool {
     static TIME: LazyLock<Regex> =
-        LazyLock::new(|| regex(r"^\d{2}:\d{2}:\d{2}(Z|[+-]\d{2}:\d{2})?$"));
+        LazyLock::new(|| regex(r"\A[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})?\z"));
     format_match(value, &TIME)
 }
 
 fn valid_format_date_time(value: &str) -> bool {
-    static DATE_TIME: LazyLock<Regex> =
-        LazyLock::new(|| regex(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(Z|[+-]\d{2}:\d{2})?$"));
+    static DATE_TIME: LazyLock<Regex> = LazyLock::new(|| {
+        regex(
+            r"\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})?\z",
+        )
+    });
     format_match(value, &DATE_TIME)
 }
 
 fn valid_format_ipv4(value: &str) -> bool {
     let parts: Vec<&str> = value.split('.').collect();
     parts.len() == 4
-        && parts
-            .iter()
-            .all(|part| values::parse_int(part).is_some_and(|n| (0..=255).contains(&n)))
+        && parts.iter().all(|part| {
+            (1..=3).contains(&part.len())
+                && part.bytes().all(|b| b.is_ascii_digit())
+                && part.parse::<u16>().is_ok_and(|n| n <= 255)
+        })
 }
 
 fn valid_format_ipv6(value: &str) -> bool {
     static IPV6: LazyLock<Regex> =
-        LazyLock::new(|| regex(r"(?i)^([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}$"));
+        LazyLock::new(|| regex(r"(?i)\A([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}\z"));
     format_match(value, &IPV6)
 }
 
 /// RFC 1035 caps a name at 253 bytes.
 fn valid_format_hostname(value: &str) -> bool {
     static HOSTNAME: LazyLock<Regex> = LazyLock::new(|| {
-        regex(r"(?i)^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
+        regex(r"(?i)\A[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\z")
     });
     value.len() <= 253 && format_match(value, &HOSTNAME)
 }

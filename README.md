@@ -124,13 +124,9 @@ just sync ../jargon
 
 Where this implementation deliberately differs:
 
-- A `pattern` without lookaround or backreferences runs in linear time, so
-  it never hits a backtracking limit. Patterns are Rust regexes, whose
-  `\d`, `\s`, and `\w` match Unicode, not just ASCII.
-- In the built-in formats, `$` matches only at the end of the value, so
-  `"a@b.co\n"` isn't an email.
-- `inf`, `nan`, and numbers too large for a float are invalid numbers.
-- Help shows a default that isn't a string as JSON.
+- Patterns run on fancy-regex rather than PCRE. One without lookaround
+  or backreferences runs in linear time, so it never hits a backtracking
+  limit.
 - No built-in YAML: schemas and config files are JSON unless you add a
   format (see above), so `.yaml` and `.yml` configs aren't looked for
   by default.

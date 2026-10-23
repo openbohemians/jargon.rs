@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use crate::schema::{Property, Schema, Type};
 use crate::values;
-use crate::{Cli, Subcommand};
+use crate::{Cli, Error, Subcommand};
 
 impl Cli {
     /// The program's help: its commands when it has subcommands, its
@@ -15,8 +15,9 @@ impl Cli {
     }
 
     /// One subcommand's help; a nested one is named with spaces
-    /// (`"remote add"`).
-    pub fn help_for(&self, subcommand: &str) -> String {
+    /// (`"remote add"`). A subcommand the CLI doesn't have is an
+    /// [`Error::Usage`], as it is for [`validate`](Cli::validate).
+    pub fn help_for(&self, subcommand: &str) -> Result<String, Error> {
         self.subcommand_help_as(&self.program_name, subcommand)
     }
 
@@ -32,7 +33,7 @@ impl Cli {
         }
     }
 
-    fn subcommand_help_as(&self, command: &str, subcommand: &str) -> String {
+    fn subcommand_help_as(&self, command: &str, subcommand: &str) -> Result<String, Error> {
         let (name, rest) = match subcommand.split_once(' ') {
             Some((name, rest)) => (name, Some(rest)),
             None => (subcommand, None),
@@ -41,10 +42,10 @@ impl Cli {
         match self.subcommands.get(name) {
             Some(Subcommand::Cli(cli)) => match rest {
                 Some(rest) => cli.subcommand_help_as(&command, rest),
-                None => cli.help_as(&command),
+                None => Ok(cli.help_as(&command)),
             },
-            Some(Subcommand::Schema(schema)) => help_text(schema, &command),
-            None => format!("Unknown subcommand: {name}"),
+            Some(Subcommand::Schema(schema)) => Ok(help_text(schema, &command)),
+            None => Err(Error::Usage(format!("Unknown subcommand: {name}"))),
         }
     }
 

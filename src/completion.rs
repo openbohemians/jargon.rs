@@ -5,6 +5,7 @@
 //! enums, subcommands) and dynamic completion (the program's own data)
 //! share one path.
 
+use std::ffi::OsStr;
 use std::fmt;
 use std::io::Write;
 use std::str::FromStr;
@@ -24,11 +25,16 @@ pub const COMPLETE_VERB: &str = "__complete";
 /// A function that completes a field's value.
 pub(crate) type Completer = Box<dyn Fn(&CompletionContext) -> Vec<String> + Send + Sync>;
 
-/// A shell Jargon writes completion scripts for.
+/// A shell Jargon writes completion scripts for. More may come, so a
+/// `match` on one needs a `_` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Shell {
+    /// Bash.
     Bash,
+    /// Zsh.
     Zsh,
+    /// Fish.
     Fish,
 }
 
@@ -68,11 +74,23 @@ impl FromStr for Shell {
 /// word as the shell split them (the program's name first), the subcommand
 /// being completed (None at the top level), and the options typed so far,
 /// read leniently, for narrowing the candidates.
+///
+/// More fields may come in later versions, so it is read, not built. To
+/// test a completer, call [`Cli::complete`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CompletionContext {
+    /// The word being completed, as typed so far; empty at a fresh word.
     pub partial: String,
+    /// The whole command line as the shell split it, the program's name
+    /// first.
     pub words: Vec<String>,
+    /// The subcommand being completed, dot-separated when nested
+    /// (`"remote.add"`), as completer paths are; None at the top level.
     pub subcommand: Option<String>,
+    /// The options typed so far, by field, each value as typed: a flag
+    /// given without a value reads `"true"`, and a flag the schema doesn't
+    /// have is kept as typed (`"--verbose"`).
     pub arguments: IndexMap<String, String>,
 }
 
@@ -120,23 +138,42 @@ impl Cli {
     }
 
     /// Answer a completion request (the hidden `__complete` verb a shim
-    /// calls) by writing the candidates to `out`, one per line. Returns
-    /// whether the arguments were one; call it before anything slow, and
-    /// exit when it returns true.
-    pub fn handle_completion<S: AsRef<str>>(
+    /// calls) by writing the candidates to `out`, one per line. `args` is
+    /// the command line, the program's name first, as for
+    /// [`parse_from`](Cli::parse_from). Returns whether it was a completion
+    /// request; call it before anything slow, and exit when it returns
+    /// true. [`run`](Cli::run) does all this itself.
+    pub fn handle_completion<I>(&self, args: I, out: &mut dyn Write) -> std::io::Result<bool>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<OsStr>,
+    {
+        // Completion is best effort: a word that isn't UTF-8 is read lossily.
+        let args: Vec<String> = args
+            .into_iter()
+            .skip(1)
+            .map(|arg| arg.as_ref().to_string_lossy().into_owned())
+            .collect();
+        self.answer_completion(&args, out)
+    }
+
+    /// [`handle_completion`](Cli::handle_completion) for the words after
+    /// the program's name.
+    pub(crate) fn answer_completion(
         &self,
-        args: &[S],
+        args: &[String],
         out: &mut dyn Write,
     ) -> std::io::Result<bool> {
-        if args.first().map(AsRef::as_ref) != Some(COMPLETE_VERB) {
+        if args.first().map(String::as_str) != Some(COMPLETE_VERB) {
             return Ok(false);
         }
         let cword = args
             .get(1)
-            .and_then(|n| values::parse_int(n.as_ref()))
+            .and_then(|n| values::parse_int(n))
+            .and_then(|n| usize::try_from(n).ok())
             .unwrap_or(0);
-        let words: Vec<&str> = args.iter().skip(2).map(AsRef::as_ref).collect();
-        for candidate in self.complete(&words, cword as isize) {
+        let words: Vec<&str> = args.iter().skip(2).map(String::as_str).collect();
+        for candidate in self.complete(&words, cword) {
             writeln!(out, "{candidate}")?;
         }
         Ok(true)
@@ -145,18 +182,17 @@ impl Cli {
     /// The completions for a command line: `words` as the shell split them,
     /// the program's name first, and `cword` the index of the word under
     /// the cursor (`words.len()` when starting a new word).
-    pub fn complete<S: AsRef<str>>(&self, words: &[S], cword: isize) -> Vec<String> {
+    pub fn complete<S: AsRef<str>>(&self, words: &[S], cword: usize) -> Vec<String> {
         let words: Vec<String> = words.iter().map(|w| w.as_ref().to_owned()).collect();
-        let partial = usize::try_from(cword)
-            .ok()
-            .and_then(|i| words.get(i))
-            .cloned()
-            .unwrap_or_default();
+        let partial = words.get(cword).cloned().unwrap_or_default();
         let engine = Engine {
             cli: self,
             words: &words,
         };
-        engine.complete_cli(self, words.get(1..).unwrap_or(&[]), cword - 1, "", &partial)
+        // The engine's cursor counts from the word after the program's
+        // name, so it is -1 on the name itself.
+        let cursor = isize::try_from(cword).unwrap_or(isize::MAX) - 1;
+        engine.complete_cli(self, words.get(1..).unwrap_or(&[]), cursor, "", &partial)
     }
 
     // ---- shims ------------------------------------------------------------

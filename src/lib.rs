@@ -12,7 +12,7 @@
 //!     "required": ["name"]
 //! }"#, "greet")?;
 //!
-//! let parsed = cli.parse(&["-n", "World"]);
+//! let parsed = cli.parse_from(["greet", "-n", "World"]);
 //! assert!(parsed.is_valid());
 //! assert_eq!(parsed.get("name").unwrap(), "World");
 //! assert_eq!(parsed.get("count").unwrap(), 1);
@@ -23,6 +23,8 @@
 //! [Crystal implementation](https://github.com/openbohemians/jargon.cr),
 //! held to the same behavior by the conformance cases its spec suite
 //! records (`tests/conformance`).
+
+#![warn(missing_docs)]
 
 mod cli;
 mod completion;
@@ -97,6 +99,7 @@ impl From<std::io::Error> for Error {
 /// as fatal. It displays as the messages, one per line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseError {
+    /// The validation errors, as [`Parsed::errors`] has them.
     pub errors: Vec<String>,
 }
 

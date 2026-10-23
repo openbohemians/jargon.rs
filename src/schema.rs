@@ -11,12 +11,21 @@ use crate::Error;
 /// The JSON Schema primitive types Jargon recognizes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Type {
+    /// `"string"`, and the type of a node that names none and has neither
+    /// `properties` nor `items`, or names one Jargon doesn't know.
     String,
+    /// `"integer"`: a whole number.
     Integer,
+    /// `"number"`: any number.
     Number,
+    /// `"boolean"`: a flag, true when given without a value.
     Boolean,
+    /// `"array"`: a list, given comma-separated (`--tags a,b`), or a
+    /// variadic positional.
     Array,
+    /// `"object"`: a group of options, given as `--group.key`.
     Object,
+    /// `"null"`.
     Null,
 }
 
@@ -79,19 +88,28 @@ impl Pattern {
 /// the root object. It holds its type, validation constraints, CLI hints
 /// (`short`, `env`), nested `properties` and `items`, and any `x-`
 /// extensions a program defines.
+///
+/// It is read, not built: make one with [`Property::from_value`], or a
+/// whole [`Schema`]. More fields may come with new keywords.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Property {
     /// The field's key, `"items"` for an array's items, or `"root"`.
     pub name: String,
     /// The `type` keyword, or the type `properties` or `items` imply.
     pub kind: Type,
+    /// The `description` keyword, which help shows beside the option.
     pub description: Option<String>,
     /// Whether the enclosing object's `required` list names this field.
     pub required: bool,
+    /// The `default` keyword: the value when no argument, environment
+    /// variable, or caller's default gives one.
     pub default: Option<Value>,
     /// The `enum` keyword.
     pub enum_values: Option<Vec<Value>>,
+    /// An object's `properties`, in the order the schema lists them.
     pub properties: Option<IndexMap<String, Property>>,
+    /// An array's `items`: the schema each element must meet.
     pub items: Option<Box<Property>>,
     /// The `$ref` keyword.
     pub reference: Option<String>,
@@ -99,20 +117,35 @@ pub struct Property {
     pub short: Option<String>,
     /// An environment variable that supplies the value.
     pub env: Option<String>,
+    /// The `minimum` keyword: the least value allowed.
     pub minimum: Option<f64>,
+    /// The `maximum` keyword: the greatest value allowed.
     pub maximum: Option<f64>,
+    /// The `exclusiveMinimum` keyword: values must be greater.
     pub exclusive_minimum: Option<f64>,
+    /// The `exclusiveMaximum` keyword: values must be less.
     pub exclusive_maximum: Option<f64>,
+    /// The `multipleOf` keyword.
     pub multiple_of: Option<f64>,
+    /// The `minLength` keyword, in characters.
     pub min_length: Option<u64>,
+    /// The `maxLength` keyword, in characters.
     pub max_length: Option<u64>,
+    /// The `minItems` keyword.
     pub min_items: Option<u64>,
+    /// The `maxItems` keyword.
     pub max_items: Option<u64>,
+    /// The `uniqueItems` keyword.
     pub unique_items: bool,
+    /// The `pattern` keyword, compiled.
     pub pattern: Option<Pattern>,
     /// The `const` keyword.
     pub constant: Option<Value>,
+    /// The `format` keyword (`email`, `uri`, `date`, `path`, ...); a format
+    /// Jargon doesn't know accepts any string.
     pub format: Option<String>,
+    /// The `additionalProperties` keyword, when it is a boolean: false
+    /// makes keys the schema doesn't name an error.
     pub additional_properties: Option<bool>,
     /// A hint that the command runs a long-lived service.
     pub service: bool,
@@ -260,10 +293,17 @@ fn parse_pattern(obj: &Map<String, Value>) -> Result<Option<Pattern>, Error> {
 /// object whose properties are the command's options), the names of its
 /// `positional` arguments, and the `definitions` (`$defs`) that `$ref`
 /// resolves against.
+///
+/// It is read, not built: make one with [`Schema::from_json`] or
+/// [`Schema::from_value`]. More fields may come with new keywords.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Schema {
+    /// The whole document, as a property named `"root"`.
     pub root: Property,
+    /// The document's `definitions` or `$defs`, by name.
     pub definitions: IndexMap<String, Property>,
+    /// The `positional` keyword: the fields bare arguments fill, in order.
     pub positional: Vec<String>,
 }
 

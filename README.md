@@ -7,6 +7,10 @@ for Crystal, held to the same behavior by the cases that implementation's
 spec suite records. The project's site is
 [jargon.openbohemians.org](https://jargon.openbohemians.org).
 
+```sh
+cargo add jargonaut
+```
+
 ```rust
 use jargonaut::Cli;
 
@@ -19,8 +23,7 @@ let cli = Cli::from_json(r#"{
     "required": ["name"]
 }"#, "greet")?;
 
-let args: Vec<String> = std::env::args().skip(1).collect();
-let parsed = cli.run(&args);
+let parsed = cli.run(); // greet -n World
 println!("{}", parsed.to_json()); // {"name":"World","count":1}
 ```
 
@@ -28,8 +31,11 @@ println!("{}", parsed.to_json()); // {"name":"World","count":1}
 bash` (or `zsh`, `fish`), answers the shell's completion requests, and
 prints the errors for invalid input, exiting in each case; otherwise it
 returns the parse. `parse` does the parsing alone, leaving the rest to
-you. `parsed.deserialize::<Args>()` reads the data into your own type,
-such as a struct deriving `serde::Deserialize`.
+you. Both read the program's own command line; `run_from` and
+`parse_from` take one instead, the program's name first, as Clap's
+`parse_from` does (`cli.parse_from(["greet", "-n", "World"])`).
+`parsed.deserialize::<Args>()` reads the data into your own type, such
+as a struct deriving `serde::Deserialize`.
 
 Options can also come from config files:
 
@@ -37,7 +43,7 @@ Options can also come from config files:
 use jargonaut::ParseOptions;
 
 let config = cli.load_config(); // ~/.config/greet.json, say
-let parsed = cli.run_with(&args, ParseOptions {
+let parsed = cli.run_with(std::env::args_os(), ParseOptions {
     defaults: config.as_ref(),
     ..ParseOptions::default()
 });
@@ -71,19 +77,23 @@ That is all of the Crystal implementation's API, except YAML.
 | `cli.subcommand("x", json: s)` | `cli.subcommand_json("x", s)?` (also `_file`) |
 | `cli.subcommand("x", other_cli)` | `cli.subcommand("x", other_cli)` (a `Cli` or a `Schema`) |
 | `cli.default_subcommand("x")` | `cli.set_default_subcommand("x")` |
-| `cli.parse(args, input, defaults: d)` | `cli.parse_with(&args, ParseOptions { stdin, defaults, env })` |
-| `cli.json(args)` | `cli.json(&args)`, a `Result` with a `ParseError` |
-| `cli.help("remote add")` | `cli.help_for("remote add")` |
-| `cli.run(args)` | `cli.run(&args)` (also `run_with`) |
+| `cli.parse` | `cli.parse()` |
+| `cli.parse(args)` | `cli.parse_from(["app", ...])`, the program's name first |
+| `cli.parse(args, input, defaults: d)` | `cli.parse_with(args, ParseOptions { stdin, defaults, env })` |
+| `cli.json(args)` | `cli.json_from(args)`, a `Result` with a `ParseError` (also `json`, `json_with`) |
+| `cli.help("remote add")` | `cli.help_for("remote add")?` |
+| `cli.run(args)` | `cli.run_from(args)` (also `run`, `run_with`) |
 | `cli.load_config(project: true)` | `cli.load_config_with(ConfigOptions { project: true, ..Default::default() })` |
 | `Jargon.config_warnings = false` | `ConfigOptions { warnings: false, .. }` |
 | `Jargon.cli("app", yaml: s)` | `Cli::from_values(docs, "app")?`, the YAML read with a library of your choice |
 | `cli.bash_completion` | `cli.completion_script(Shell::Bash)` |
-| `cli.handle_completion(args)` | `if cli.handle_completion(&args, &mut stdout)? { exit(0) }` |
+| `cli.handle_completion(args)` | `if cli.handle_completion(std::env::args_os(), &mut stdout)? { exit(0) }` |
 | `Jargon::Validator.validate(data, schema)` | `jargonaut::validate(&data, &schema)` |
 | `result.valid?` | `parsed.is_valid()` |
 
-Building a CLI returns a `Result` where Crystal raises. `defaults` is a
+Crystal's `args` leave the program's name out, as `ARGV` does; a Rust
+command line starts with it, as `std::env::args_os` does. Building a CLI
+returns a `Result` where Crystal raises. `defaults` is a
 `serde_json::Map`, so it can only be an object. `ParseOptions` can also
 supply the environment, which the environment variables in a schema
 (`"env"`) are read from.

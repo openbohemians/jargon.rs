@@ -8,13 +8,21 @@ use crate::Shell;
 /// or a completion script, for the program to act on. Such a request isn't
 /// a validation outcome, so check `help_requested` and `completion_shell`
 /// before treating `errors` as final.
+///
+/// More fields may come in later versions, so it is read, not built.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Parsed {
+    /// The options, with defaults filled in, keyed by field. Nested
+    /// objects are nested maps.
     pub data: Map<String, Value>,
+    /// The validation errors, as messages for the user, in the order found.
     pub errors: Vec<String>,
     /// The chosen subcommand, space-separated when nested (`"remote add"`);
     /// None for a CLI without subcommands, or when none matched.
     pub subcommand: Option<String>,
+    /// True when `--help` or `-h` was given, unless the schema has an
+    /// option of its own by that name.
     pub help_requested: bool,
     /// Whose help was asked for; None is the program's own.
     pub help_subcommand: Option<String>,

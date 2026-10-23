@@ -264,8 +264,9 @@ fn parse() {
             .map(|a| a.as_str().unwrap())
             .collect();
 
+        let command_line = std::iter::once(cli.program_name()).chain(args.iter().copied());
         let parsed = cli.parse_with(
-            &args,
+            command_line,
             ParseOptions {
                 defaults,
                 stdin: Some(&mut stdin),
@@ -377,20 +378,22 @@ fn help() {
             report.skip(&case, why);
             continue;
         }
-        let result = build(&case["cli"]).map(|cli| match case["subcommand"].as_str() {
+        let result = build(&case["cli"]).and_then(|cli| match case["subcommand"].as_str() {
             Some(subcommand) => cli.help_for(subcommand),
-            None => cli.help(),
+            None => Ok(cli.help()),
         });
         let expect = &case["expect"];
-        let ok = result
-            .as_ref()
-            .is_ok_and(|help| expect.as_str() == Some(help.as_str()));
+        let ok = match (&result, expect.get("raises")) {
+            (Ok(help), None) => expect.as_str() == Some(help.as_str()),
+            (Err(e), Some(message)) => message == &e.to_string(),
+            _ => false,
+        };
         report.check(&case, ok, || match &result {
             Ok(help) => format!(
                 "  expected:\n{}\n  actual:\n{help}",
                 expect.as_str().unwrap_or_default()
             ),
-            Err(e) => format!("  building the CLI failed: {e}"),
+            Err(e) => format!("  expected: {expect}\n  failed: {e}"),
         });
     }
     report.finish("help");
@@ -410,7 +413,7 @@ fn complete() {
             .iter()
             .map(|w| w.as_str().unwrap())
             .collect();
-        let cword = case["cword"].as_i64().expect("cword") as isize;
+        let cword = case["cword"].as_u64().expect("cword") as usize;
         let result = build(&case["cli"]).map(|cli| cli.complete(&words, cword));
         let expect = &case["expect"];
         let ok = result

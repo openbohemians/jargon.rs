@@ -1,9 +1,11 @@
 //! Running a program's command line: the help, completion, and error
 //! handling every program does the same way.
 
+use std::ffi::OsStr;
 use std::io::Write;
 use std::process;
 
+use crate::cli::arguments;
 use crate::{Cli, ParseOptions, Parsed};
 
 /// What [`Cli::run`] does with a command line.
@@ -18,53 +20,91 @@ enum Outcome {
 }
 
 impl Cli {
-    /// Parse the arguments, as [`parse`](Cli::parse) does, and handle what
-    /// isn't the program's business: print the help for `--help`, the
-    /// completions a shell asks for, or the script for `--completions
-    /// SHELL`, then exit 0; or print the errors to standard error and exit
-    /// 1. Otherwise return the parse, which is valid.
+    /// Parse the program's command line, as [`parse`](Cli::parse) does,
+    /// and handle what isn't the program's business: print the help for
+    /// `--help`, the completions a shell asks for, or the script for
+    /// `--completions SHELL`, then exit 0; or print the errors to standard
+    /// error and exit 1. Otherwise return the parse, which is valid.
     ///
     /// ```no_run
     /// # let cli = jargonaut::Cli::from_json(r#"{"type": "object"}"#, "app")?;
-    /// let args: Vec<String> = std::env::args().skip(1).collect();
-    /// let parsed = cli.run(&args);
+    /// let parsed = cli.run();
     /// # Ok::<(), jargonaut::Error>(())
     /// ```
     ///
     /// # Panics
     ///
     /// When the CLI has neither a schema nor subcommands.
-    pub fn run<S: AsRef<str>>(&self, args: &[S]) -> Parsed {
-        self.run_with(args, ParseOptions::default())
+    pub fn run(&self) -> Parsed {
+        self.run_with(std::env::args_os(), ParseOptions::default())
     }
 
-    /// [`run`](Cli::run) with [`ParseOptions`].
+    /// [`run`](Cli::run) for a command line, the program's name first, as
+    /// for [`parse_from`](Cli::parse_from).
     ///
     /// # Panics
     ///
     /// When the CLI has neither a schema nor subcommands.
-    pub fn run_with<S: AsRef<str>>(&self, args: &[S], options: ParseOptions<'_>) -> Parsed {
-        match self.outcome(args, options) {
+    pub fn run_from<I>(&self, args: I) -> Parsed
+    where
+        I: IntoIterator,
+        I::Item: AsRef<OsStr>,
+    {
+        self.run_with(args, ParseOptions::default())
+    }
+
+    /// [`run_from`](Cli::run_from) with [`ParseOptions`]. Pass
+    /// [`std::env::args_os`] to run the program's own command line.
+    ///
+    /// ```no_run
+    /// use jargonaut::ParseOptions;
+    /// # let cli = jargonaut::Cli::from_json(r#"{"type": "object"}"#, "app")?;
+    ///
+    /// let config = cli.load_config();
+    /// let parsed = cli.run_with(std::env::args_os(), ParseOptions {
+    ///     defaults: config.as_ref(),
+    ///     ..ParseOptions::default()
+    /// });
+    /// # Ok::<(), jargonaut::Error>(())
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// When the CLI has neither a schema nor subcommands.
+    pub fn run_with<I>(&self, args: I, options: ParseOptions<'_>) -> Parsed
+    where
+        I: IntoIterator,
+        I::Item: AsRef<OsStr>,
+    {
+        let outcome = match arguments(args) {
+            Ok(args) => self.outcome(&args, options),
+            Err(error) => Outcome::Fail(error + "\n"),
+        };
+        match outcome {
             Outcome::Continue(parsed) => parsed,
             Outcome::Print(text) => exit(&mut std::io::stdout(), &text, 0),
             Outcome::Fail(text) => exit(&mut std::io::stderr(), &text, 1),
         }
     }
 
-    fn outcome<S: AsRef<str>>(&self, args: &[S], options: ParseOptions<'_>) -> Outcome {
+    /// What to do with the words after the program's name.
+    fn outcome(&self, args: &[String], options: ParseOptions<'_>) -> Outcome {
         let mut candidates = Vec::new();
         // Writing to a Vec can't fail.
-        if let Ok(true) = self.handle_completion(args, &mut candidates) {
+        if let Ok(true) = self.answer_completion(args, &mut candidates) {
             return Outcome::Print(String::from_utf8_lossy(&candidates).into_owned());
         }
 
-        let parsed = self.parse_with(args, options);
+        let parsed = self.parse_arguments(args, options);
         if parsed.help_requested {
             let help = match &parsed.help_subcommand {
                 Some(subcommand) => self.help_for(subcommand),
-                None => self.help(),
+                None => Ok(self.help()),
             };
-            Outcome::Print(help + "\n")
+            match help {
+                Ok(help) => Outcome::Print(help + "\n"),
+                Err(error) => Outcome::Fail(error.to_string() + "\n"),
+            }
         } else if let Some(shell) = parsed.completion_shell {
             Outcome::Print(self.completion_script(shell) + "\n")
         } else if !parsed.is_valid() {
@@ -101,8 +141,10 @@ mod tests {
         .unwrap()
     }
 
+    /// The outcome for the words after the program's name.
     fn outcome(cli: &Cli, args: &[&str]) -> Outcome {
-        cli.outcome(args, ParseOptions::default())
+        let args: Vec<String> = args.iter().map(|&arg| arg.to_owned()).collect();
+        cli.outcome(&args, ParseOptions::default())
     }
 
     #[test]
@@ -138,7 +180,7 @@ mod tests {
         };
         assert_eq!(
             text,
-            cli.parse(&["--mode", "medium"]).errors.join("\n") + "\n"
+            cli.parse_from(["greet", "--mode", "medium"]).errors.join("\n") + "\n"
         );
         assert_eq!(
             outcome(&cli, &["--completions", "tcsh"]),
@@ -153,7 +195,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             outcome(&cli, &["remote", "--help"]),
-            Outcome::Print(cli.help_for("remote") + "\n")
+            Outcome::Print(cli.help_for("remote").unwrap() + "\n")
         );
     }
 }

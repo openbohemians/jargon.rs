@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::io::{Cursor, Read};
 use std::path::Path;
 
@@ -20,7 +21,10 @@ use crate::{Error, ParseError, Parsed};
     reason = "a program has a handful of subcommands"
 )]
 pub enum Subcommand {
+    /// A command with options of its own.
     Schema(Schema),
+    /// A command with subcommands of its own, as `remote` is in
+    /// `git remote add`.
     Cli(Cli),
 }
 
@@ -51,6 +55,24 @@ pub struct ParseOptions<'a> {
     pub stdin: Option<&'a mut dyn Read>,
     /// Looks up an environment variable.
     pub env: Option<&'a EnvLookup<'a>>,
+}
+
+/// The words after the program's name in a command line, each checked for
+/// UTF-8.
+pub(crate) fn arguments<I>(args: I) -> Result<Vec<String>, String>
+where
+    I: IntoIterator,
+    I::Item: AsRef<OsStr>,
+{
+    args.into_iter()
+        .skip(1)
+        .map(|arg| {
+            let arg = arg.as_ref();
+            arg.to_str()
+                .map(String::from)
+                .ok_or_else(|| format!("Argument '{}' is not valid UTF-8", arg.to_string_lossy()))
+        })
+        .collect()
 }
 
 /// One parse's inputs, passed down to nested CLIs.
@@ -146,7 +168,7 @@ impl Cli {
     ///     ],
     ///     "app",
     /// )?;
-    /// let parsed = cli.parse(&["fetch", "--verbose", "--url", "x"]);
+    /// let parsed = cli.parse_from(["app", "fetch", "--verbose", "--url", "x"]);
     /// assert_eq!(parsed.subcommand.as_deref(), Some("fetch"));
     /// # Ok::<(), jargonaut::Error>(())
     /// ```
@@ -252,26 +274,33 @@ impl Cli {
         self
     }
 
+    /// The name help and completion scripts use for the program.
     pub fn program_name(&self) -> &str {
         &self.program_name
     }
 
+    /// The schema of a flat CLI; None for one with subcommands.
     pub fn schema(&self) -> Option<&Schema> {
         self.schema.as_ref()
     }
 
+    /// The subcommands, in the order they were added.
     pub fn subcommands(&self) -> &IndexMap<String, Subcommand> {
         &self.subcommands
     }
 
+    /// The subcommand used when the arguments name none, if one is set.
     pub fn default_subcommand(&self) -> Option<&str> {
         self.default_subcommand.as_deref()
     }
 
+    /// The JSON key that names the subcommand in the `-` form.
     pub fn subcommand_key(&self) -> &str {
         &self.subcommand_key
     }
 
+    /// Whether a bare `key=value` word assigns a property; see
+    /// [`set_bare_assignment`](Cli::set_bare_assignment).
     pub fn bare_assignment(&self) -> bool {
         self.bare_assignment
     }
@@ -490,25 +519,59 @@ fn merge_schema(target: &mut Map<String, Value>, source: &Map<String, Value>) ->
 // ---- parsing --------------------------------------------------------------
 
 impl Cli {
-    /// Parse arguments (without the program name) into a [`Parsed`]: the
-    /// data plus any errors. Invalid input is never a failure here; check
-    /// [`Parsed::is_valid`].
+    /// Parse the program's command line into a [`Parsed`]: the data plus
+    /// any errors. Invalid input is never a failure here; check
+    /// [`Parsed::is_valid`]. An argument that isn't UTF-8 is one of the
+    /// errors.
     ///
     /// # Panics
     ///
     /// When the CLI has neither a schema nor subcommands.
-    pub fn parse<S: AsRef<str>>(&self, args: &[S]) -> Parsed {
+    pub fn parse(&self) -> Parsed {
+        self.parse_with(std::env::args_os(), ParseOptions::default())
+    }
+
+    /// Parse a command line, the program's name first, as
+    /// [`std::env::args_os`] gives it; the name itself is skipped.
+    ///
+    /// ```
+    /// let cli = jargonaut::Cli::from_json(r#"{"properties": {"name": {}}}"#, "greet")?;
+    /// let parsed = cli.parse_from(["greet", "--name", "World"]);
+    /// assert_eq!(parsed.get("name").unwrap(), "World");
+    /// # Ok::<(), jargonaut::Error>(())
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// When the CLI has neither a schema nor subcommands.
+    pub fn parse_from<I>(&self, args: I) -> Parsed
+    where
+        I: IntoIterator,
+        I::Item: AsRef<OsStr>,
+    {
         self.parse_with(args, ParseOptions::default())
     }
 
-    /// Parse with defaults, or with standard input or the environment
-    /// supplied (see [`ParseOptions`]).
+    /// [`parse_from`](Cli::parse_from) with defaults, or with standard
+    /// input or the environment supplied (see [`ParseOptions`]). Pass
+    /// [`std::env::args_os`] to parse the program's own command line.
     ///
     /// # Panics
     ///
     /// When the CLI has neither a schema nor subcommands.
-    pub fn parse_with<S: AsRef<str>>(&self, args: &[S], options: ParseOptions<'_>) -> Parsed {
-        let args: Vec<String> = args.iter().map(|arg| arg.as_ref().to_owned()).collect();
+    pub fn parse_with<I>(&self, args: I, options: ParseOptions<'_>) -> Parsed
+    where
+        I: IntoIterator,
+        I::Item: AsRef<OsStr>,
+    {
+        match arguments(args) {
+            Ok(args) => self.parse_arguments(&args, options),
+            Err(error) => Parsed::error(error),
+        }
+    }
+
+    /// Parse the words after the program's name.
+    pub(crate) fn parse_arguments(&self, args: &[String], options: ParseOptions<'_>) -> Parsed {
         let process_env = |name: &str| std::env::var(name).ok();
         let mut process_stdin = std::io::stdin();
         let mut context = Context {
@@ -519,20 +582,35 @@ impl Cli {
                 None => &mut process_stdin,
             },
         };
-        self.parse_args(&args, &mut context)
+        self.parse_args(args, &mut context)
     }
 
-    /// Parse and return just the data, or the errors when it isn't valid.
-    pub fn json<S: AsRef<str>>(&self, args: &[S]) -> Result<Map<String, Value>, ParseError> {
+    /// Parse the program's command line and return just the data, or the
+    /// errors when it isn't valid.
+    pub fn json(&self) -> Result<Map<String, Value>, ParseError> {
+        self.json_with(std::env::args_os(), ParseOptions::default())
+    }
+
+    /// [`json`](Cli::json) for a command line, the program's name first,
+    /// as for [`parse_from`](Cli::parse_from).
+    pub fn json_from<I>(&self, args: I) -> Result<Map<String, Value>, ParseError>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<OsStr>,
+    {
         self.json_with(args, ParseOptions::default())
     }
 
-    /// [`json`](Cli::json) with [`ParseOptions`].
-    pub fn json_with<S: AsRef<str>>(
+    /// [`json_from`](Cli::json_from) with [`ParseOptions`].
+    pub fn json_with<I>(
         &self,
-        args: &[S],
+        args: I,
         options: ParseOptions<'_>,
-    ) -> Result<Map<String, Value>, ParseError> {
+    ) -> Result<Map<String, Value>, ParseError>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<OsStr>,
+    {
         let parsed = self.parse_with(args, options);
         if parsed.is_valid() {
             Ok(parsed.data)

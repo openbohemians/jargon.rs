@@ -6,6 +6,7 @@ rust-version = "1.88"
 description = "Define a command-line interface with JSON Schema: parsing, validation, defaults, help, and shell completion"
 license = "MIT"
 repository = "https://github.com/openbohemians/jargon.rs"
+homepage = "https://jargon.openbohemians.org"
 authors = ["Thomas Sawyer <transfire@gmail.com>"]
 keywords = ["cli", "json-schema", "argument", "parser", "command-line"]
 categories = ["command-line-interface"]

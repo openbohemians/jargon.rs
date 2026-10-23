@@ -116,8 +116,8 @@ spec suite: each is a call, its inputs, and what Crystal Jargon returned.
 the Crystal repository, then copy them here:
 
 ```sh
-(cd ../jargon && just conformance)
-just sync ../jargon
+(cd ../jargon.cr && just conformance)
+just sync ../jargon.cr
 ```
 
 `tests/conformance/COMMIT` names the commit they came from.

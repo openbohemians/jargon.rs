@@ -20,7 +20,7 @@ fmt:
   cargo fmt
 
 # Copy in the conformance cases (record them there with `just conformance`)
-sync path="../jargon":
+sync path="../jargon.cr":
   scripts/sync-conformance.sh {{path}}
 
 # Generate and open the API documentation

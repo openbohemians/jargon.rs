@@ -2,7 +2,7 @@
 
 Jargon for Rust. Define a command-line interface with JSON Schema: the schema is the single
 source of truth for a program's options, their types, validation,
-defaults, help, and shell completion. This is a port of [Jargon](https://github.com/trans/jargon)
+defaults, help, and shell completion. This is a port of [Jargon](https://github.com/openbohemians/jargon.cr)
 for Crystal, held to the same behavior by the cases that implementation's
 spec suite records.
 

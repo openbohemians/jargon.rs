@@ -20,7 +20,7 @@
 //! ```
 //!
 //! Jargonaut is Jargon for Rust, a port of the
-//! [Crystal implementation](https://github.com/trans/jargon),
+//! [Crystal implementation](https://github.com/openbohemians/jargon.cr),
 //! held to the same behavior by the conformance cases its spec suite
 //! records (`tests/conformance`).
 

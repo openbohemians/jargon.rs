@@ -113,24 +113,27 @@ fn help_text(schema: &Schema, command: &str) -> String {
     lines.push(String::new());
 
     if !positional.is_empty() {
+        // Whether an argument is required shows in the usage line.
         lines.push("Arguments:".into());
-        for name in positional {
-            if let Some(prop) = props.and_then(|props| props.get(name)) {
-                lines.push(format!(
-                    "  {name}    {}",
-                    prop.description.as_deref().unwrap_or_default()
-                ));
-            }
-        }
+        let entries: Vec<_> = positional
+            .iter()
+            .filter_map(|name| {
+                let prop = schema.resolve(props?.get(name)?);
+                Some((name.clone(), help_text_for(prop, false)))
+            })
+            .collect();
+        help_columns(&mut lines, &entries);
         lines.push(String::new());
     }
 
     lines.push("Options:".into());
+    let mut entries = Vec::new();
     for (name, prop) in props.into_iter().flatten() {
         if !positional.contains(name) {
-            option_lines(&mut lines, name, prop, "", schema, &HashSet::new());
+            option_entries(&mut entries, name, prop, "", schema, &HashSet::new());
         }
     }
+    help_columns(&mut lines, &entries);
     lines.join("\n")
 }
 
@@ -148,12 +151,12 @@ fn command_line(name: &str, description: Option<&str>, indent: usize, width: usi
     }
 }
 
-/// An option's lines, then its nested options'. `expanding` holds the
+/// An option's entry, then its nested options'. `expanding` holds the
 /// `$ref`s descended through on this path: a ref already in it is
 /// recursive (a tree-shaped schema), so it is listed but not expanded
 /// again, which would never end.
-fn option_lines(
-    lines: &mut Vec<String>,
+fn option_entries(
+    entries: &mut Vec<(String, String)>,
     name: &str,
     prop: &Property,
     prefix: &str,
@@ -168,10 +171,7 @@ fn option_lines(
         format!("{prefix}.{name}")
     };
 
-    lines.push(option_line(&full_name, prop));
-    if let Some(description) = prop.description.as_deref().filter(|d| !d.is_empty()) {
-        lines.push(format!("      {description}"));
-    }
+    entries.push((help_flag(&full_name, prop), help_text_for(prop, true)));
     if reference.is_some_and(|r| expanding.contains(r)) {
         return;
     }
@@ -188,27 +188,80 @@ fn option_lines(
             None => Cow::Borrowed(expanding),
         };
         for (nested_name, nested_prop) in nested {
-            option_lines(lines, nested_name, nested_prop, &full_name, schema, &inner);
+            option_entries(
+                entries,
+                nested_name,
+                nested_prop,
+                &full_name,
+                schema,
+                &inner,
+            );
         }
     }
 }
 
-/// An option's flag, its value's type, and whether it is required or has a
-/// default.
-fn option_line(full_name: &str, prop: &Property) -> String {
-    let required = if prop.required { " (required)" } else { "" };
-    let default = prop
-        .default
-        .as_ref()
-        .map(|d| format!(" [default: {}]", values::display(d)))
-        .unwrap_or_default();
+/// An option's flag and, unless it's a boolean, its value's type.
+fn help_flag(full_name: &str, prop: &Property) -> String {
     let flag = match &prop.short {
         Some(short) => format!("-{short}, --{full_name}"),
         None => format!("    --{full_name}"),
     };
     if prop.kind == Type::Boolean {
-        format!("  {flag}{required}{default}")
+        flag
     } else {
-        format!("  {flag}=<{}>{required}{default}", prop.kind.name())
+        format!("{flag}=<{}>", prop.kind.name())
+    }
+}
+
+/// What help says about an argument or option: its description, the values
+/// an enum allows, whether it's required (when `required`), and its default.
+fn help_text_for(prop: &Property, required: bool) -> String {
+    let mut parts = Vec::new();
+    if let Some(description) = prop.description.as_deref().map(str::trim_end)
+        && !description.is_empty()
+    {
+        parts.push(description.to_owned());
+    }
+    if let Some(values) = prop.enum_values.as_ref().filter(|v| !v.is_empty()) {
+        let values: Vec<_> = values.iter().map(values::display).collect();
+        parts.push(format!("[{}]", values.join("|")));
+    }
+    if required && prop.required {
+        parts.push("(required)".into());
+    }
+    if let Some(default) = &prop.default {
+        parts.push(format!("[default: {}]", values::display(default)));
+    }
+    parts.join(" ")
+}
+
+/// The furthest into a line that the second column of `Arguments:` and
+/// `Options:` starts.
+const HELP_COLUMN_LIMIT: usize = 32;
+
+/// Lays out `(name, text)` entries in two columns: each text starts two
+/// spaces past the widest name, or at [`HELP_COLUMN_LIMIT`] if that is
+/// nearer, and a name too wide for that has its text on the next line. A
+/// text of several lines has each one at the column.
+fn help_columns(lines: &mut Vec<String>, entries: &[(String, String)]) {
+    let column = (name_width(entries.iter().map(|(name, _)| name)) + 4).min(HELP_COLUMN_LIMIT);
+    let indent = " ".repeat(column);
+    for (name, text) in entries {
+        let entry = format!("  {name}");
+        if text.is_empty() {
+            lines.push(entry);
+            continue;
+        }
+        let mut text_lines = text.split('\n');
+        let first = text_lines.next().unwrap_or_default();
+        if entry.chars().count() + 2 <= column {
+            lines.push(format!("{entry:<column$}{first}"));
+        } else {
+            lines.push(entry);
+            lines.push(format!("{indent}{first}"));
+        }
+        for line in text_lines {
+            lines.push(format!("{indent}{line}").trim_end().to_owned());
+        }
     }
 }

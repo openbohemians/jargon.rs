@@ -3,6 +3,8 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
+use serde_json::Value;
+
 use crate::schema::{Property, Schema, Type};
 use crate::values;
 use crate::{Cli, Error, Subcommand};
@@ -59,24 +61,29 @@ impl Cli {
         let width = name_width(self.subcommands.keys());
         for (name, subcommand) in &self.subcommands {
             match subcommand {
-                Subcommand::Schema(schema) => lines.push(command_line(
-                    name,
+                Subcommand::Schema(schema) => help_entry(
+                    &mut lines,
+                    &format!("  {name}"),
+                    width + 4,
                     schema.root.description.as_deref(),
-                    2,
-                    width,
-                )),
+                ),
                 Subcommand::Cli(cli) => {
                     // A nested CLI is a group with no description of its
                     // own: its commands are listed under it, aligned among
                     // themselves.
-                    lines.push(command_line(name, None, 2, width));
+                    help_entry(&mut lines, &format!("  {name}"), width + 4, None);
                     let sub_width = name_width(cli.subcommands.keys());
                     for (sub_name, sub) in &cli.subcommands {
                         let description = match sub {
                             Subcommand::Schema(schema) => schema.root.description.as_deref(),
                             Subcommand::Cli(_) => None,
                         };
-                        lines.push(command_line(sub_name, description, 4, sub_width));
+                        help_entry(
+                            &mut lines,
+                            &format!("    {sub_name}"),
+                            sub_width + 6,
+                            description,
+                        );
                     }
                 }
             }
@@ -139,16 +146,6 @@ fn help_text(schema: &Schema, command: &str) -> String {
 
 fn name_width<'a>(names: impl Iterator<Item = &'a String>) -> usize {
     names.map(|name| name.chars().count()).max().unwrap_or(0)
-}
-
-/// One command's listing: its name padded to `width`, then its description
-/// when it has one.
-fn command_line(name: &str, description: Option<&str>, indent: usize, width: usize) -> String {
-    let entry = format!("{}{name:<width$}", " ".repeat(indent));
-    match description {
-        Some(description) => format!("{entry}  {description}"),
-        None => entry.trim_end().to_owned(),
-    }
 }
 
 /// An option's entry, then its nested options'. `expanding` holds the
@@ -223,16 +220,25 @@ fn help_text_for(prop: &Property, required: bool) -> String {
         parts.push(description.to_owned());
     }
     if let Some(values) = prop.enum_values.as_ref().filter(|v| !v.is_empty()) {
-        let values: Vec<_> = values.iter().map(values::display).collect();
+        let values: Vec<_> = values.iter().map(help_value).collect();
         parts.push(format!("[{}]", values.join("|")));
     }
     if required && prop.required {
         parts.push("(required)".into());
     }
     if let Some(default) = &prop.default {
-        parts.push(format!("[default: {}]", values::display(default)));
+        parts.push(format!("[default: {}]", help_value(default)));
     }
     parts.join(" ")
+}
+
+/// A string as itself, anything else as JSON (`[1, 2]`, `null`). An empty
+/// string is `""`, so that it shows.
+fn help_value(value: &Value) -> String {
+    match value {
+        Value::String(s) if s.is_empty() => values::to_json(value),
+        other => values::display(other),
+    }
 }
 
 /// The furthest into a line that the second column of `Arguments:` and
@@ -241,27 +247,34 @@ const HELP_COLUMN_LIMIT: usize = 32;
 
 /// Lays out `(name, text)` entries in two columns: each text starts two
 /// spaces past the widest name, or at [`HELP_COLUMN_LIMIT`] if that is
-/// nearer, and a name too wide for that has its text on the next line. A
-/// text of several lines has each one at the column.
+/// nearer.
 fn help_columns(lines: &mut Vec<String>, entries: &[(String, String)]) {
     let column = (name_width(entries.iter().map(|(name, _)| name)) + 4).min(HELP_COLUMN_LIMIT);
-    let indent = " ".repeat(column);
     for (name, text) in entries {
-        let entry = format!("  {name}");
-        if text.is_empty() {
-            lines.push(entry);
-            continue;
-        }
-        let mut text_lines = text.split('\n');
-        let first = text_lines.next().unwrap_or_default();
-        if entry.chars().count() + 2 <= column {
-            lines.push(format!("{entry:<column$}{first}"));
-        } else {
-            lines.push(entry);
-            lines.push(format!("{indent}{first}"));
-        }
-        for line in text_lines {
-            lines.push(format!("{indent}{line}").trim_end().to_owned());
-        }
+        help_entry(lines, &format!("  {name}"), column, Some(text));
+    }
+}
+
+/// Adds one listing: `entry`, then `text` from `column` on, or on the next
+/// line if `entry` is too wide to leave two spaces before the column. A
+/// text of several lines has each one at the column.
+fn help_entry(lines: &mut Vec<String>, entry: &str, column: usize, text: Option<&str>) {
+    let text = text.map(str::trim_end).unwrap_or_default();
+    if text.is_empty() {
+        lines.push(entry.to_owned());
+        return;
+    }
+
+    let indent = " ".repeat(column);
+    let mut text_lines = text.split('\n');
+    let first = text_lines.next().unwrap_or_default();
+    if entry.chars().count() + 2 <= column {
+        lines.push(format!("{entry:<column$}{first}").trim_end().to_owned());
+    } else {
+        lines.push(entry.to_owned());
+        lines.push(format!("{indent}{first}").trim_end().to_owned());
+    }
+    for line in text_lines {
+        lines.push(format!("{indent}{line}").trim_end().to_owned());
     }
 }

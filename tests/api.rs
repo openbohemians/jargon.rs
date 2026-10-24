@@ -151,6 +151,23 @@ fn help_for_an_unknown_subcommand_is_an_error() {
 }
 
 #[test]
+fn a_subcommands_completer_answers_after_its_abbreviation() {
+    let mut cli = Cli::new("git");
+    cli.subcommand_json(
+        "fetch",
+        r#"{"type": "object", "positional": ["url"], "properties": {"url": {"type": "string"}}}"#,
+    )
+    .unwrap();
+    cli.completer("fetch.url", |ctx| {
+        let subcommand = ctx.subcommand.as_deref().unwrap_or_default();
+        vec![format!("{subcommand}:{}", ctx.partial)]
+    })
+    .unwrap();
+    assert_eq!(cli.complete(&["git", "fetch", "site"], 2), ["fetch:site"]);
+    assert_eq!(cli.complete(&["git", "fet", "site"], 2), ["fetch:site"]);
+}
+
+#[test]
 #[should_panic(expected = "CLI has no schema and no subcommands defined")]
 fn parsing_with_nothing_to_parse_against_panics() {
     Cli::new("empty").parse_from(["empty", "x"]);

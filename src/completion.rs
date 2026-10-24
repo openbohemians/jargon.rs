@@ -355,8 +355,10 @@ impl Engine<'_> {
                 return filter(names, partial);
             }
 
+            // The subcommand may be abbreviated, as it may be for `parse`.
             let rest = args.get(1..).unwrap_or(&[]);
-            return match args.first().map(|name| (name, cli.subcommands.get(name))) {
+            let name = args.first().and_then(|arg| cli.resolve_subcommand(arg));
+            return match name.map(|name| (name, cli.subcommands.get(name))) {
                 Some((name, Some(Subcommand::Cli(sub)))) => {
                     self.complete_cli(sub, rest, cursor - 1, &join(path, name), partial)
                 }

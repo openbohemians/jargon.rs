@@ -912,7 +912,7 @@ impl Cli {
 
     /// The subcommand `input` names: exactly, or as an unambiguous prefix
     /// of at least 3 characters.
-    fn resolve_subcommand(&self, input: &str) -> Option<&str> {
+    pub(crate) fn resolve_subcommand(&self, input: &str) -> Option<&str> {
         if let Some((name, _)) = self.subcommands.get_key_value(input) {
             return Some(name);
         }

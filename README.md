@@ -37,6 +37,11 @@ you. Both read the program's own command line; `run_from` and
 `parsed.deserialize::<Args>()` reads the data into your own type, such
 as a struct deriving `serde::Deserialize`.
 
+Jargon's job ends at a valid value: one with the type, format, and
+constraints its schema gives it. What that value refers to, such as the
+document a `query` names, and what to do when none or several match, is
+up to your program, once `parse` returns.
+
 Options can also come from config files:
 
 ```rust

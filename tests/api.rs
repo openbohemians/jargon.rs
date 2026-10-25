@@ -168,6 +168,27 @@ fn a_subcommands_completer_answers_after_its_abbreviation() {
 }
 
 #[test]
+fn the_default_subcommands_completer_answers_for_words_that_name_none() {
+    let mut cli = Cli::new("app");
+    cli.subcommand_json(
+        "query",
+        r#"{"type": "object", "positional": ["term"],
+            "properties": {"term": {"type": "string"}, "verbose": {"type": "boolean"}}}"#,
+    )
+    .unwrap();
+    cli.subcommand_json("index", r#"{"type": "object", "properties": {}}"#)
+        .unwrap();
+    cli.set_default_subcommand("query");
+    cli.completer("query.term", |ctx| {
+        let subcommand = ctx.subcommand.as_deref().unwrap_or_default();
+        vec![format!("{subcommand}:{}", ctx.partial)]
+    })
+    .unwrap();
+    assert_eq!(cli.complete(&["app", "in"], 1), ["index", "query:in"]);
+    assert_eq!(cli.complete(&["app", "--verbose", "se"], 2), ["query:se"]);
+}
+
+#[test]
 #[should_panic(expected = "CLI has no schema and no subcommands defined")]
 fn parsing_with_nothing_to_parse_against_panics() {
     Cli::new("empty").parse_from(["empty", "x"]);

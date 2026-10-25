@@ -5,6 +5,7 @@
 //! enums, subcommands) and dynamic completion (the program's own data)
 //! share one path.
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fmt;
 use std::io::Write;
@@ -346,31 +347,62 @@ impl Engine<'_> {
         partial: &str,
     ) -> Vec<String> {
         if !cli.subcommands.is_empty() {
-            // Completing the subcommand's name.
+            let default = cli.default_subcommand();
+
+            // Completing the subcommand's name, which may instead be the
+            // default subcommand's first word.
             if cursor <= 0 {
                 let mut names: Vec<String> = cli.subcommands.keys().cloned().collect();
                 if partial.starts_with('-') {
                     names.extend(["--help".into(), "-h".into()]);
                 }
-                return filter(names, partial);
+                let mut candidates = filter(names, partial);
+                if let Some(default) = default {
+                    candidates.extend(
+                        self.complete_subcommand(cli, default, args, cursor, path, partial),
+                    );
+                }
+                let mut seen = HashSet::new();
+                candidates.retain(|candidate| seen.insert(candidate.clone()));
+                return candidates;
             }
 
-            // The subcommand may be abbreviated, as it may be for `parse`.
-            let rest = args.get(1..).unwrap_or(&[]);
-            let name = args.first().and_then(|arg| cli.resolve_subcommand(arg));
-            return match name.map(|name| (name, cli.subcommands.get(name))) {
-                Some((name, Some(Subcommand::Cli(sub)))) => {
-                    self.complete_cli(sub, rest, cursor - 1, &join(path, name), partial)
+            // Descend into the chosen subcommand, which may be abbreviated,
+            // or, when the first word names none, into the default
+            // subcommand with every word, as `parse` does.
+            if let Some(name) = args.first().and_then(|arg| cli.resolve_subcommand(arg)) {
+                let rest = args.get(1..).unwrap_or(&[]);
+                return self.complete_subcommand(cli, name, rest, cursor - 1, path, partial);
+            }
+            return match default {
+                Some(default) => {
+                    self.complete_subcommand(cli, default, args, cursor, path, partial)
                 }
-                Some((name, Some(Subcommand::Schema(schema)))) => {
-                    self.complete_schema(schema, rest, cursor - 1, &join(path, name), partial)
-                }
-                _ => Vec::new(),
+                None => Vec::new(),
             };
         }
 
         match &cli.schema {
             Some(schema) => self.complete_schema(schema, args, cursor, path, partial),
+            None => Vec::new(),
+        }
+    }
+
+    fn complete_subcommand(
+        &self,
+        cli: &Cli,
+        name: &str,
+        args: &[String],
+        cursor: isize,
+        path: &str,
+        partial: &str,
+    ) -> Vec<String> {
+        let path = join(path, name);
+        match cli.subcommands.get(name) {
+            Some(Subcommand::Cli(sub)) => self.complete_cli(sub, args, cursor, &path, partial),
+            Some(Subcommand::Schema(schema)) => {
+                self.complete_schema(schema, args, cursor, &path, partial)
+            }
             None => Vec::new(),
         }
     }

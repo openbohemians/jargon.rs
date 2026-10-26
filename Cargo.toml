@@ -1,6 +1,6 @@
 [package]
 name = "jargonaut"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Define a command-line interface with JSON Schema: parsing, validation, defaults, help, and shell completion"

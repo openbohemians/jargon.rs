@@ -4,6 +4,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
@@ -11,7 +12,32 @@ use serde_json::{Map, Value};
 use crate::Cli;
 
 /// Reads a config file's text as JSON.
-pub(crate) type ConfigParser = Box<dyn Fn(&str) -> Result<Value, String> + Send + Sync>;
+pub(crate) type ConfigParser = Arc<dyn Fn(&str) -> Result<Value, String> + Send + Sync>;
+
+/// The extensions a config format is read from, for
+/// [`Cli::config_format`]: one, `"toml"`, or several, `["yaml", "yml"]`.
+pub trait ConfigExtensions {
+    /// The extensions, in the order they're looked for.
+    fn extensions(&self) -> Vec<&str>;
+}
+
+impl ConfigExtensions for &str {
+    fn extensions(&self) -> Vec<&str> {
+        vec![*self]
+    }
+}
+
+impl<const N: usize> ConfigExtensions for [&str; N] {
+    fn extensions(&self) -> Vec<&str> {
+        self.to_vec()
+    }
+}
+
+impl ConfigExtensions for &[&str] {
+    fn extensions(&self) -> Vec<&str> {
+        self.to_vec()
+    }
+}
 
 /// Where [`Cli::load_config_with`] looks for config files, and what it does
 /// with them.
@@ -72,13 +98,14 @@ impl Cli {
         )
     }
 
-    /// Read config files ending in `.ext` with `parse`, which turns a
-    /// file's text into JSON: a YAML or TOML library's `from_str`, say.
-    /// Configs are otherwise JSON only. An added format is looked for
-    /// ahead of JSON, and ahead of formats added after it, so where a
-    /// directory has both `app.toml` and `app.json`, `app.toml` takes
-    /// precedence. Adding `json` replaces the JSON parser (with one that
-    /// allows comments, say), and JSON keeps its place.
+    /// Read config files ending in any of `extensions` with `parse`, which
+    /// turns a file's text into JSON: a YAML or TOML library's `from_str`,
+    /// say. Configs are otherwise JSON only. An added format is looked for
+    /// ahead of JSON, and ahead of formats added after it, its extensions
+    /// in the order given, so where a directory has both `app.toml` and
+    /// `app.json`, `app.toml` takes precedence. Adding `json` replaces the
+    /// JSON parser (with one that allows comments, say), and JSON keeps its
+    /// place.
     ///
     /// ```
     /// # mod toml {
@@ -88,27 +115,38 @@ impl Cli {
     /// # }
     /// let mut cli = jargonaut::Cli::from_json(r#"{"type": "object"}"#, "app")?;
     /// cli.config_format("toml", toml::from_str);
+    /// cli.config_format(["conf", "cfg"], toml::from_str);
     /// let config = cli.load_config(); // reads ~/.config/app.toml too
     /// # Ok::<(), jargonaut::Error>(())
     /// ```
     ///
     /// # Panics
     ///
-    /// When `ext` is empty or has a dot or a path separator in it: it is
-    /// the extension alone, `"toml"`.
-    pub fn config_format<F, E>(&mut self, ext: &str, parse: F) -> &mut Cli
+    /// When `extensions` has none, or one is empty or has a dot or a path
+    /// separator in it: each is the extension alone, `"toml"`. None is
+    /// added then.
+    pub fn config_format<F, E>(&mut self, extensions: impl ConfigExtensions, parse: F) -> &mut Cli
     where
         F: Fn(&str) -> Result<Value, E> + Send + Sync + 'static,
         E: fmt::Display,
     {
+        let extensions = extensions.extensions();
         assert!(
-            !ext.is_empty() && !ext.contains(|c| c == '.' || std::path::is_separator(c)),
-            "a config format's extension is the extension alone, such as \"toml\"; got {ext:?}"
+            !extensions.is_empty(),
+            "config_format needs an extension, such as \"toml\""
         );
-        self.config_formats.insert(
-            ext.to_owned(),
-            Box::new(move |text| parse(text).map_err(|error| error.to_string())),
-        );
+        for ext in &extensions {
+            assert!(
+                !ext.is_empty() && !ext.contains(|c| c == '.' || std::path::is_separator(c)),
+                "a config format's extension is the extension alone, such as \"toml\"; got {ext:?}"
+            );
+        }
+        let parser: ConfigParser =
+            Arc::new(move |text| parse(text).map_err(|error| error.to_string()));
+        for ext in extensions {
+            self.config_formats
+                .insert(ext.to_owned(), Arc::clone(&parser));
+        }
         self
     }
 }
@@ -466,8 +504,42 @@ mod tests {
     }
 
     #[test]
+    fn one_format_reads_each_extension_given_in_order() {
+        let dir = TempDir::new("several");
+        dir.write("myapp.keyval", r#"host = "keyval-host""#);
+        let mut cli = Cli::new("myapp");
+        cli.config_format(["kv", "keyval"], key_values);
+        let slice: &[&str] = &["conf", "cfg"];
+        cli.config_format(slice, key_values);
+        let exts = extensions(&cli.config_formats);
+        assert_eq!(exts, ["kv", "keyval", "conf", "cfg", "json"]);
+        let paths = search_paths("myapp", None, Some(dir.0.clone().into()), None, &exts);
+        assert_eq!(
+            load(&paths, QUIET, &cli.config_formats),
+            json!({"host": "keyval-host"}).as_object().cloned()
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "the extension alone")]
     fn a_format_is_named_by_its_extension_alone() {
         Cli::new("myapp").config_format(".toml", key_values);
+    }
+
+    #[test]
+    #[should_panic(expected = "needs an extension")]
+    fn a_format_needs_an_extension() {
+        let none: [&str; 0] = [];
+        Cli::new("myapp").config_format(none, key_values);
+    }
+
+    #[test]
+    fn a_bad_extension_among_several_adds_none() {
+        let mut cli = Cli::new("myapp");
+        let added = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            cli.config_format(["conf", "x/cfg"], key_values);
+        }));
+        assert!(added.is_err());
+        assert_eq!(extensions(&cli.config_formats), JSON);
     }
 }

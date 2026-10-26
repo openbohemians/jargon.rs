@@ -135,9 +135,15 @@ cli.config_format("toml", toml::from_str);
 ```
 
 A parser is any function from the file's text to a `serde_json::Value`
-whose error displays, so a YAML library's `from_str` works the same way
-(registered for `yaml`, and `yml` too if you like). Registering `json` replaces the JSON parser, with
-one that allows comments, say.
+whose error displays, so a YAML library's `from_str` works the same way.
+A format can have several extensions, looked for in the order given:
+
+```rust
+cli.config_format(["yaml", "yml"], your_yaml_library::from_str);
+```
+
+Registering `json` replaces the JSON parser, with one that allows
+comments, say.
 
 ## Conformance
 

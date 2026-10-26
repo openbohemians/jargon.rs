@@ -16,26 +16,46 @@ pub(crate) type ConfigParser = Arc<dyn Fn(&str) -> Result<Value, String> + Send 
 
 /// The extensions a config format is read from, for
 /// [`Cli::config_format`]: one, `"toml"`, or several, `["yaml", "yml"]`.
+/// One is a string; several are an array, slice, or `Vec` of strings.
+/// Either can be owned or borrowed.
 pub trait ConfigExtensions {
     /// The extensions, in the order they're looked for.
     fn extensions(&self) -> Vec<&str>;
 }
 
-impl ConfigExtensions for &str {
+impl ConfigExtensions for str {
     fn extensions(&self) -> Vec<&str> {
-        vec![*self]
+        vec![self]
     }
 }
 
-impl<const N: usize> ConfigExtensions for [&str; N] {
+impl ConfigExtensions for String {
     fn extensions(&self) -> Vec<&str> {
-        self.to_vec()
+        vec![self]
     }
 }
 
-impl ConfigExtensions for &[&str] {
+impl<S: AsRef<str>> ConfigExtensions for [S] {
     fn extensions(&self) -> Vec<&str> {
-        self.to_vec()
+        self.iter().map(AsRef::as_ref).collect()
+    }
+}
+
+impl<S: AsRef<str>, const N: usize> ConfigExtensions for [S; N] {
+    fn extensions(&self) -> Vec<&str> {
+        self.as_slice().extensions()
+    }
+}
+
+impl<S: AsRef<str>> ConfigExtensions for Vec<S> {
+    fn extensions(&self) -> Vec<&str> {
+        self.as_slice().extensions()
+    }
+}
+
+impl<T: ConfigExtensions + ?Sized> ConfigExtensions for &T {
+    fn extensions(&self) -> Vec<&str> {
+        (**self).extensions()
     }
 }
 
@@ -531,6 +551,21 @@ mod tests {
     fn a_format_needs_an_extension() {
         let none: [&str; 0] = [];
         Cli::new("myapp").config_format(none, key_values);
+    }
+
+    #[test]
+    fn extensions_can_be_owned_or_borrowed() {
+        let mut cli = Cli::new("myapp");
+        let strings = vec![String::from("e"), String::from("f")];
+        cli.config_format("a", key_values);
+        cli.config_format(String::from("b"), key_values);
+        cli.config_format(["c", "d"], key_values);
+        cli.config_format(&strings, key_values);
+        cli.config_format(vec!["g"], key_values);
+        assert_eq!(
+            extensions(&cli.config_formats),
+            ["a", "b", "c", "d", "e", "f", "g", "json"]
+        );
     }
 
     #[test]

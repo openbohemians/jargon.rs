@@ -54,6 +54,19 @@ let parsed = cli.run_with(std::env::args_os(), ParseOptions {
 });
 ```
 
+With subcommands, a config can set options for all of them and for each
+one. An object under a subcommand's name is that subcommand's section, and
+any other key is global:
+
+```json
+{"verbose": true, "fetch": {"depth": 1}, "remote": {"add": {"name": "upstream"}}}
+```
+
+A subcommand takes the global keys it has an option for, then its own
+section's keys over them, all of them, so a misspelled one is still
+reported under `additionalProperties: false`. A nested CLI's section holds
+its subcommands' sections. This applies to `defaults` from any source.
+
 ## Status
 
 Ported so far, with every recorded case for it passing:
@@ -69,7 +82,8 @@ Ported so far, with every recorded case for it passing:
 - Help text, and `jargonaut::merge` and `jargonaut::flatten`
 - Shell completion for bash, zsh, and fish, with completers for dynamic
   values
-- Config files (`load_config`), in JSON or any format you add, and `run`
+- Config files (`load_config`), in JSON or any format you add, with
+  sections for subcommands, and `run`
 
 That is all of the Crystal implementation's API, except YAML.
 
@@ -90,6 +104,7 @@ That is all of the Crystal implementation's API, except YAML.
 | `cli.run(args)` | `cli.run_from(args)` (also `run`, `run_with`) |
 | `cli.load_config(project: true)` | `cli.load_config_with(ConfigOptions { project: true, ..Default::default() })` |
 | `Jargon.config_warnings = false` | `ConfigOptions { warnings: false, .. }` |
+| `cli.config_format("toml") { \|text\| TOML.parse(text) }` | `cli.config_format("toml", toml::from_str)` |
 | `Jargon.cli("app", yaml: s)` | `Cli::from_values(docs, "app")?`, the YAML read with a library of your choice |
 | `cli.bash_completion` | `cli.completion_script(Shell::Bash)` |
 | `cli.handle_completion(args)` | `if cli.handle_completion(std::env::args_os(), &mut stdout)? { exit(0) }` |

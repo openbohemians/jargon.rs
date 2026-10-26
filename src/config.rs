@@ -175,7 +175,7 @@ fn load(
 
 /// Merge `source` into `target`, objects in both recursively; otherwise
 /// `source`'s value wins.
-fn deep_merge(target: &mut Map<String, Value>, source: Map<String, Value>) {
+pub(crate) fn deep_merge(target: &mut Map<String, Value>, source: Map<String, Value>) {
     for (key, value) in source {
         match (target.get_mut(&key), value) {
             (Some(Value::Object(existing)), Value::Object(nested)) => deep_merge(existing, nested),

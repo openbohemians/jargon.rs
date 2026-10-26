@@ -8,7 +8,7 @@ use indexmap::IndexMap;
 use serde_json::{Map, Value};
 
 use crate::completion::{Completer, Shell};
-use crate::config::ConfigParser;
+use crate::config::{ConfigParser, deep_merge};
 use crate::schema::{Property, Schema, Type};
 use crate::validator::{validate, validate_except};
 use crate::values;
@@ -50,6 +50,12 @@ pub struct ParseOptions<'a> {
     /// Option defaults, such as from a config file. They rank below
     /// arguments and environment variables, and above the schema's
     /// defaults.
+    ///
+    /// With subcommands, an object under a subcommand's name is that
+    /// subcommand's section, and any other key is global. A subcommand
+    /// takes the global keys it has an option for, then its section's
+    /// keys over them, every one of them. A nested CLI's section holds its
+    /// own subcommands' sections the same way.
     pub defaults: Option<&'a Map<String, Value>>,
     /// The input read for the `-` form (options as JSON).
     pub stdin: Option<&'a mut dyn Read>,
@@ -75,9 +81,18 @@ where
         .collect()
 }
 
+/// Option defaults worked out for a CLI or command, borrowed where
+/// nothing needed changing.
+type Defaults<'a> = Option<Cow<'a, Map<String, Value>>>;
+
 /// One parse's inputs, passed down to nested CLIs.
 struct Context<'a> {
-    defaults: Option<&'a Map<String, Value>>,
+    /// Option defaults from further up, for any command with the option.
+    globals: Option<&'a Map<String, Value>>,
+    /// The option defaults given for this CLI or command: with
+    /// subcommands, an object under a subcommand's name is that
+    /// subcommand's section, and any other key is global.
+    section: Option<&'a Map<String, Value>>,
     env: &'a EnvLookup<'a>,
     input: &'a mut dyn Read,
 }
@@ -575,7 +590,8 @@ impl Cli {
         let process_env = |name: &str| std::env::var(name).ok();
         let mut process_stdin = std::io::stdin();
         let mut context = Context {
-            defaults: options.defaults,
+            globals: None,
+            section: options.defaults,
             env: options.env.unwrap_or(&process_env),
             input: match options.stdin {
                 Some(input) => input,
@@ -705,6 +721,13 @@ impl Cli {
         args: &[String],
         context: &mut Context<'_>,
     ) -> Parsed {
+        let (globals, section) = self.subcommand_defaults(name, context);
+        let context = &mut Context {
+            globals: globals.as_deref(),
+            section,
+            env: context.env,
+            input: &mut *context.input,
+        };
         match subcommand {
             Subcommand::Cli(cli) => {
                 let parsed = cli.parse_args(args, context);
@@ -753,13 +776,15 @@ impl Cli {
         else {
             return Parsed::error(format!("Unknown subcommand: {name}"));
         };
+        let (globals, section) = self.subcommand_defaults(name, context);
 
         match subcommand {
             Subcommand::Cli(cli) => {
                 // The nested CLI reads the rest of the JSON as its own input.
                 let mut nested_input = Cursor::new(Value::Object(data).to_string().into_bytes());
                 let mut nested = Context {
-                    defaults: context.defaults,
+                    globals: globals.as_deref(),
+                    section,
                     env: context.env,
                     input: &mut nested_input,
                 };
@@ -771,11 +796,44 @@ impl Cli {
                 }
             }
             Subcommand::Schema(schema) => {
-                let mut parsed = finish_json(data, schema, context);
+                let scoped = Context {
+                    globals: globals.as_deref(),
+                    section,
+                    env: context.env,
+                    input: &mut *context.input,
+                };
+                let mut parsed = finish_json(data, schema, &scoped);
                 parsed.subcommand = Some(name.clone());
                 parsed
             }
         }
+    }
+
+    /// Split this CLI's section of the defaults for subcommand `name`: the
+    /// keys that aren't a subcommand's section are global, over the
+    /// globals from further up, and `name`'s section is the subcommand's
+    /// own.
+    fn subcommand_defaults<'c>(
+        &self,
+        name: &str,
+        context: &Context<'c>,
+    ) -> (Defaults<'c>, Option<&'c Map<String, Value>>) {
+        let Some(section) = context.section else {
+            return (context.globals.map(Cow::Borrowed), None);
+        };
+        let own: Map<String, Value> = section
+            .iter()
+            .filter(|(key, value)| !(self.subcommands.contains_key(*key) && value.is_object()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        let globals = if own.is_empty() {
+            context.globals.map(Cow::Borrowed)
+        } else {
+            let mut globals = context.globals.cloned().unwrap_or_default();
+            deep_merge(&mut globals, own);
+            Some(Cow::Owned(globals))
+        };
+        (globals, section.get(name).and_then(Value::as_object))
     }
 
     fn parse_flat(
@@ -815,7 +873,7 @@ impl Cli {
         apply_env_vars(&mut data, &mut errors, schema, context);
         // Before defaults fill anything in, every value came from a token.
         let unconverted = unconverted_fields(&data, schema.resolve(&schema.root), schema, "");
-        apply_user_defaults(&mut data, context.defaults);
+        apply_user_defaults(&mut data, command_defaults(schema, context).as_deref());
         apply_defaults(&mut data, schema);
         errors.extend(validate_except(&data, schema, &unconverted));
         Parsed::new(data, errors)
@@ -968,10 +1026,31 @@ fn read_stdin_json(context: &mut Context<'_>) -> Result<Map<String, Value>, Stri
 fn finish_json(mut data: Map<String, Value>, schema: &Schema, context: &Context<'_>) -> Parsed {
     let mut errors = Vec::new();
     apply_env_vars(&mut data, &mut errors, schema, context);
-    apply_user_defaults(&mut data, context.defaults);
+    apply_user_defaults(&mut data, command_defaults(schema, context).as_deref());
     apply_defaults(&mut data, schema);
     errors.extend(validate(&data, schema));
     Parsed::new(data, errors)
+}
+
+/// The defaults a command takes: the global ones it has an option for,
+/// then its section's, all of them, as a CLI without subcommands takes
+/// all of its defaults.
+fn command_defaults<'c>(schema: &Schema, context: &Context<'c>) -> Defaults<'c> {
+    let properties = schema.properties();
+    let mut defaults: Map<String, Value> = context
+        .globals
+        .into_iter()
+        .flatten()
+        .filter(|(key, _)| properties.is_some_and(|props| props.contains_key(*key)))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    if defaults.is_empty() {
+        return context.section.map(Cow::Borrowed);
+    }
+    if let Some(section) = context.section {
+        deep_merge(&mut defaults, section.clone());
+    }
+    Some(Cow::Owned(defaults))
 }
 
 /// Whether the arguments ask for the built-in help. A schema may claim

@@ -1,5 +1,7 @@
 # Jargonaut
 
+[![CI](https://github.com/openbohemians/jargon.rs/actions/workflows/ci.yml/badge.svg)](https://github.com/openbohemians/jargon.rs/actions/workflows/ci.yml)
+
 Jargon for Rust. Define a command-line interface with JSON Schema: the schema is the single
 source of truth for a program's options, their types, validation,
 defaults, help, and shell completion. This is a port of [Jargon](https://github.com/openbohemians/jargon.cr)

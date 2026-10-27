@@ -59,7 +59,9 @@ fn json_returns_the_data_or_the_errors() {
     let data = cli().json_from(["app", "--name", "x"]).expect("valid");
     assert_eq!(Value::Object(data), json!({"name": "x", "count": 1}));
 
-    let error = cli().json_from(["app", "--count", "two"]).expect_err("invalid");
+    let error = cli()
+        .json_from(["app", "--count", "two"])
+        .expect_err("invalid");
     assert_eq!(
         error.to_string(),
         "Invalid integer value 'two' for count\nMissing required field: name"
@@ -135,7 +137,11 @@ fn an_argument_that_isnt_utf8_is_an_error() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
-    let args = [OsStr::new("app"), OsStr::new("-n"), OsStr::from_bytes(b"caf\xe9")];
+    let args = [
+        OsStr::new("app"),
+        OsStr::new("-n"),
+        OsStr::from_bytes(b"caf\xe9"),
+    ];
     let parsed = cli().parse_from(args);
     assert_eq!(parsed.errors, ["Argument 'caf\u{FFFD}' is not valid UTF-8"]);
 }
@@ -143,7 +149,8 @@ fn an_argument_that_isnt_utf8_is_an_error() {
 #[test]
 fn help_for_an_unknown_subcommand_is_an_error() {
     let mut cli = Cli::new("git");
-    cli.subcommand_json("remote", r#"{"type": "object"}"#).unwrap();
+    cli.subcommand_json("remote", r#"{"type": "object"}"#)
+        .unwrap();
     assert!(cli.help_for("remote").is_ok());
     let error = cli.help_for("nope").expect_err("no such subcommand");
     assert!(matches!(error, jargonaut::Error::Usage(_)));

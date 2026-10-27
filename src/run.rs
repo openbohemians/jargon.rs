@@ -180,7 +180,10 @@ mod tests {
         };
         assert_eq!(
             text,
-            cli.parse_from(["greet", "--mode", "medium"]).errors.join("\n") + "\n"
+            cli.parse_from(["greet", "--mode", "medium"])
+                .errors
+                .join("\n")
+                + "\n"
         );
         assert_eq!(
             outcome(&cli, &["--completions", "tcsh"]),

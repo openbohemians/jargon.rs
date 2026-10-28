@@ -1,1 +1,1 @@
-10735d5996261b3fb42310378348d2878eff41bb 2026-10-28 Read options as JSON from stdin with -@, leaving - to name stdin
+d1c6fbd52b330a7ffc9b50f8ba7af3c6e08218ba 2026-10-28 Mark the variadic positional with *, and let positionals follow it

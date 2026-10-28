@@ -405,8 +405,12 @@ pub struct Schema {
     pub root: Property,
     /// The document's `definitions` or `$defs`, by name.
     pub definitions: IndexMap<String, Property>,
-    /// The `positional` keyword: the fields bare arguments fill, in order.
+    /// The `positional` keyword: the fields bare arguments fill, in order,
+    /// without the `*` that marks the variadic one.
     pub positional: Vec<String>,
+    /// The positional that takes a list of words, marked in `positional`
+    /// with a trailing `*` (`["sources*", "dest"]`), or None.
+    pub variadic: Option<String>,
 }
 
 impl Schema {
@@ -425,6 +429,16 @@ impl Schema {
         };
         let required = string_list(obj, "required")?;
         let positional = string_list(obj, "positional")?;
+        let starred: Vec<&String> = positional
+            .iter()
+            .filter(|name| name.ends_with('*'))
+            .collect();
+        if let [first, second, ..] = starred.as_slice() {
+            return Err(Error::Schema(format!(
+                "Positionals '{first}' and '{second}' are both variadic (only one can take a list)"
+            )));
+        }
+        let variadic = starred.first().map(|name| unstarred(name).to_owned());
         let root = Property::from_value("root", json, &required)?;
 
         let definitions = match obj.get("definitions").or_else(|| obj.get("$defs")) {
@@ -437,11 +451,32 @@ impl Schema {
             None => IndexMap::new(),
         };
 
-        Ok(Schema {
+        let schema = Schema {
             root,
             definitions,
-            positional,
-        })
+            positional: positional
+                .iter()
+                .map(|name| unstarred(name).to_owned())
+                .collect(),
+            variadic,
+        };
+        schema.check_variadic()?;
+        Ok(schema)
+    }
+
+    fn check_variadic(&self) -> Result<(), Error> {
+        let Some(name) = &self.variadic else {
+            return Ok(());
+        };
+        match self.find_property(name) {
+            None => Err(Error::Schema(format!(
+                "Positional '{name}*' names no property"
+            ))),
+            Some(prop) if prop.kind != Type::Array => Err(Error::Schema(format!(
+                "Positional '{name}*' isn't an array (did you mean type: array?)"
+            ))),
+            Some(_) => Ok(()),
+        }
     }
 
     /// The definition a local `$ref` (`#/$defs/Name`) points to; None for a
@@ -466,4 +501,28 @@ impl Schema {
     pub(crate) fn properties(&self) -> Option<&IndexMap<String, Property>> {
         self.resolve(&self.root).properties.as_ref()
     }
+
+    /// A property by dotted path (`server.port`), descending through object
+    /// properties and resolving `$ref`s. None when a segment is missing, or a
+    /// segment before the last isn't an object.
+    pub(crate) fn find_property(&self, key: &str) -> Option<&Property> {
+        let parts: Vec<&str> = key.split('.').collect();
+        let mut current = self.resolve(&self.root);
+        for (i, part) in parts.iter().enumerate() {
+            let resolved = self.resolve(current.properties.as_ref()?.get(*part)?);
+            if i == parts.len() - 1 {
+                return Some(resolved);
+            }
+            if resolved.kind != Type::Object {
+                return None;
+            }
+            current = resolved;
+        }
+        None
+    }
+}
+
+/// A positional's name without the `*` that marks it variadic.
+fn unstarred(name: &str) -> &str {
+    name.strip_suffix('*').unwrap_or(name)
 }

@@ -885,8 +885,8 @@ impl Cli {
 
         let mut data = Map::new();
         let mut errors = Vec::new();
-        let filled = self.consume_tokens(args, schema, &mut data, &mut errors, context);
-        init_empty_variadic(filled, schema, &mut data, &mut errors);
+        self.consume_tokens(args, schema, &mut data, &mut errors, context);
+        init_empty_variadic(schema, &mut data, &mut errors);
         apply_env_vars(&mut data, &mut errors, schema, context);
         // Before defaults fill anything in, every value came from a token.
         let unconverted = unconverted_fields(&data, schema.resolve(&schema.root), schema, "");
@@ -896,8 +896,7 @@ impl Cli {
         Parsed::new(data, errors)
     }
 
-    /// Walk the argument words, filling `data` and `errors`. Returns how
-    /// many positional slots were filled.
+    /// Walk the argument words, filling `data` and `errors`.
     fn consume_tokens(
         &self,
         args: &[String],
@@ -905,7 +904,7 @@ impl Cli {
         data: &mut Map<String, Value>,
         errors: &mut Vec<String>,
         context: &Context<'_>,
-    ) -> usize {
+    ) {
         let short_to_long = build_short_map(schema);
         let positional = &schema.positional;
         let mut filled = 0;
@@ -924,7 +923,7 @@ impl Cli {
             } else if !options_ended && arg.starts_with("--") {
                 i += handle_long_flag(arg, args, i, data, errors, schema, context);
             } else if filled < positional.len() {
-                i += handle_positional(
+                let (consumed, slots) = handle_positional(
                     arg,
                     args,
                     i,
@@ -935,12 +934,12 @@ impl Cli {
                     options_ended,
                     context,
                 );
-                filled += 1;
+                i += consumed;
+                filled += slots;
             } else {
                 i += self.handle_extra_arg(arg, data, errors, schema, context);
             }
         }
-        filled
     }
 
     fn handle_extra_arg(
@@ -1304,7 +1303,8 @@ fn parse_long_flag(
     }
 }
 
-/// Returns how many words the positional took.
+/// Returns how many words the positional took, and how many slots it
+/// filled.
 #[allow(clippy::too_many_arguments)]
 fn handle_positional(
     arg: &str,
@@ -1316,51 +1316,80 @@ fn handle_positional(
     schema: &Schema,
     options_ended: bool,
     context: &Context<'_>,
-) -> usize {
+) -> (usize, usize) {
     let names = &schema.positional;
     let key = &names[slot];
-    let is_array = find_property(key, schema).is_some_and(|p| p.kind == Type::Array);
-
-    if is_array && slot == names.len() - 1 {
-        collect_variadic(args, i, key, data, errors, schema, options_ended)
-    } else {
-        let (coerced, error) = coerce_value(key, arg, schema, context);
-        errors.extend(error);
-        set_nested_value(data, key, Some(coerced), errors);
-        1
+    if schema.variadic.as_ref() != Some(key) {
+        set_positional(key, arg, data, errors, schema, context);
+        return (1, 1);
     }
+
+    // The variadic takes a run of words, and the positionals after it take
+    // the run's last words, one each (`cp a b dir/`).
+    let (consumed, words) = collect_run(args, i, options_ended);
+    let after = &names[slot + 1..];
+    let count = after.len().min(words.len());
+    let (own, rest) = words.split_at(words.len() - count);
+    set_variadic(key, own, data, errors, schema);
+    for (name, word) in after.iter().zip(rest) {
+        set_positional(name, word, data, errors, schema, context);
+    }
+    (consumed, 1 + after.len())
 }
 
-/// A variadic positional is greedy: it takes every word literally, `:` and
-/// `=` and negative numbers included, and stops only at a real flag, which
-/// is then parsed as one. After `--` it takes flags too.
-fn collect_variadic(
-    args: &[String],
-    start: usize,
+fn set_positional(
     key: &str,
+    word: &str,
     data: &mut Map<String, Value>,
     errors: &mut Vec<String>,
     schema: &Schema,
-    passthrough: bool,
-) -> usize {
-    let prop = find_property(key, schema);
-    let item_type = prop.and_then(|p| p.items.as_ref()).map(|items| items.kind);
-    let mut items = Vec::new();
+    context: &Context<'_>,
+) {
+    let (coerced, error) = coerce_value(key, word, schema, context);
+    errors.extend(error);
+    set_nested_value(data, key, Some(coerced), errors);
+}
+
+/// The words a variadic takes from `start`, and how many words they span.
+/// The run is greedy: it takes every word literally, `:` and `=` and
+/// negative numbers included, and stops only at a real flag, which is then
+/// parsed as one. A `--` in the run is dropped, and after `--` it takes
+/// flags too.
+fn collect_run(args: &[String], start: usize, mut passthrough: bool) -> (usize, Vec<String>) {
+    let mut words = Vec::new();
     let mut i = start;
     while i < args.len() {
         let arg = &args[i];
-        if !passthrough && flag_like(arg) {
+        if !passthrough && arg == "--" {
+            passthrough = true;
+        } else if !passthrough && flag_like(arg) {
             break;
+        } else {
+            words.push(arg.clone());
         }
-        for piece in array_pieces(arg, prop) {
+        i += 1;
+    }
+    (i - start, words)
+}
+
+fn set_variadic(
+    key: &str,
+    words: &[String],
+    data: &mut Map<String, Value>,
+    errors: &mut Vec<String>,
+    schema: &Schema,
+) {
+    let prop = find_property(key, schema);
+    let item_type = prop.and_then(|p| p.items.as_ref()).map(|items| items.kind);
+    let mut items = Vec::new();
+    for word in words {
+        for piece in array_pieces(word, prop) {
             let (coerced, error) = coerce_scalar(key, &piece, item_type);
             errors.extend(error);
             items.push(coerced);
         }
-        i += 1;
     }
     set_nested_value(data, key, Some(Value::Array(items)), errors);
-    i - start
 }
 
 /// The items a word gives an array: the word itself, or its pieces when the
@@ -1372,19 +1401,10 @@ fn array_pieces(value: &str, prop: Option<&Property>) -> Vec<String> {
     }
 }
 
-/// An unfilled variadic positional is an empty list.
-fn init_empty_variadic(
-    filled: usize,
-    schema: &Schema,
-    data: &mut Map<String, Value>,
-    errors: &mut Vec<String>,
-) {
-    let names = &schema.positional;
-    if filled >= names.len() {
-        return;
-    }
-    let key = &names[names.len() - 1];
-    if find_property(key, schema).is_some_and(|p| p.kind == Type::Array) && !data.contains_key(key)
+/// A variadic that isn't given is an empty list.
+fn init_empty_variadic(schema: &Schema, data: &mut Map<String, Value>, errors: &mut Vec<String>) {
+    if let Some(key) = &schema.variadic
+        && nested_value(data, key).is_none()
     {
         set_nested_value(data, key, Some(Value::Array(Vec::new())), errors);
     }
@@ -1411,28 +1431,11 @@ fn boolean_property(key: &str, schema: &Schema) -> bool {
     find_property(key, schema).is_some_and(|p| p.kind == Type::Boolean)
 }
 
-/// A property by dotted path (`server.port`), descending through object
-/// properties and resolving `$ref`s. None when a segment is missing, or a
-/// segment before the last isn't an object.
+/// A property by dotted path (`server.port`); see `Schema::find_property`.
 fn find_property<'a>(key: &str, schema: &'a Schema) -> Option<&'a Property> {
-    let parts: Vec<&str> = key.split('.').collect();
-    let mut current = schema.resolve(&schema.root);
-    for (i, part) in parts.iter().enumerate() {
-        let resolved = schema.resolve(current.properties.as_ref()?.get(*part)?);
-        if i == parts.len() - 1 {
-            return Some(resolved);
-        }
-        if resolved.kind != Type::Object {
-            return None;
-        }
-        current = resolved;
-    }
-    None
+    schema.find_property(key)
 }
 
-/// A word as the value of the property at `key`: numbers and booleans
-/// coerced, a list split at commas, `~` expanded in a `format: path`
-/// string. A word that doesn't fit stays a string, with an error.
 /// The fields whose value didn't convert to the field's type. A token is a
 /// string, and converting one leaves a string in a number or boolean field
 /// only when it fails, which it reports; validating the value as well
@@ -1484,6 +1487,10 @@ fn converted_type(kind: Type) -> bool {
     matches!(kind, Type::Integer | Type::Number | Type::Boolean)
 }
 
+/// A word as the value of the property at `key`: numbers and booleans
+/// coerced, a list split at its separators, `~` expanded in a
+/// `format: path` string. A word that doesn't fit stays a string, with an
+/// error.
 fn coerce_value(
     key: &str,
     value: &str,

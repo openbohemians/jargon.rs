@@ -109,10 +109,15 @@ fn help_text(schema: &Schema, command: &str) -> String {
         let required = props
             .and_then(|props| props.get(name))
             .is_none_or(|prop| prop.required);
-        usage.push(if required {
+        let part = if required {
             format!("<{name}>")
         } else {
             format!("[{name}]")
+        };
+        usage.push(if schema.variadic.as_ref() == Some(name) {
+            format!("{part}...")
+        } else {
+            part
         });
     }
     usage.push("[options]".into());

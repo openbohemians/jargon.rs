@@ -550,16 +550,24 @@ fn flag_name_candidates(schema: &Schema, partial: &str) -> Vec<String> {
 }
 
 /// The positional slot the cursor is in, counting past flags and the values
-/// they take. Past the declared slots, the last positional when it is a
-/// variadic list.
+/// they take. From the variadic on, the parser gives the run's last words to
+/// the positionals after it, so the word under the cursor, the last so far,
+/// is one of theirs, or the variadic's when none follows it.
 fn positional_at(schema: &Schema, args: &[String], cursor: isize) -> Option<String> {
     let names = &schema.positional;
-    let last = names.last()?;
     let limit = cursor.min(args.len() as isize);
     let slot = positional_index(schema, args, limit);
-    match names.get(slot) {
-        Some(name) => Some(name.clone()),
-        None => array(schema, last).then(|| last.clone()),
+    let variadic = schema
+        .variadic
+        .as_ref()
+        .and_then(|name| names.iter().position(|n| n == name));
+    match variadic {
+        Some(variadic) if slot >= variadic => {
+            let after = names.len() - 1 - variadic;
+            let run = slot - variadic + 1;
+            Some(names[variadic + run.min(after)].clone())
+        }
+        _ => names.get(slot).cloned(),
     }
 }
 
@@ -732,12 +740,6 @@ fn boolean(schema: &Schema, field: &str) -> bool {
     props_of(schema)
         .and_then(|props| props.get(field))
         .is_some_and(|p| p.kind == Type::Boolean)
-}
-
-fn array(schema: &Schema, field: &str) -> bool {
-    props_of(schema)
-        .and_then(|props| props.get(field))
-        .is_some_and(|p| p.kind == Type::Array)
 }
 
 fn join(path: &str, name: &str) -> String {

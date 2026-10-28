@@ -141,9 +141,7 @@ fn help_text(schema: &Schema, command: &str) -> String {
     lines.push("Options:".into());
     let mut entries = Vec::new();
     for (name, prop) in props.into_iter().flatten() {
-        if !positional.contains(name) {
-            option_entries(&mut entries, name, prop, "", schema, &HashSet::new());
-        }
+        option_entries(&mut entries, name, prop, "", schema, &HashSet::new());
     }
     help_columns(&mut lines, &entries);
     lines.join("\n")

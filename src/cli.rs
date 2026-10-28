@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io::{Cursor, Read};
 use std::path::Path;
@@ -896,7 +896,10 @@ impl Cli {
         Parsed::new(data, errors)
     }
 
-    /// Walk the argument words, filling `data` and `errors`.
+    /// Walk the argument words, filling `data` and `errors`. A first walk
+    /// finds the positionals set by name and the bare words, so that the
+    /// words fill the other positionals wherever the options are among them
+    /// (`grep a -e foo b`); the second applies everything in order.
     fn consume_tokens(
         &self,
         args: &[String],
@@ -906,39 +909,45 @@ impl Cli {
         context: &Context<'_>,
     ) {
         let short_to_long = build_short_map(schema);
-        let positional = &schema.positional;
-        let mut filled = 0;
-        let mut options_ended = false;
-        let mut i = 0;
+        let mut named = Map::new();
+        let mut words = Vec::new();
+        walk_tokens(
+            args,
+            schema,
+            &short_to_long,
+            &mut named,
+            &mut Vec::new(),
+            context,
+            |_, i, _, _| words.push(i),
+        );
+        let open: Vec<&String> = schema
+            .positional
+            .iter()
+            .filter(|name| nested_value(&named, name).is_none())
+            .collect();
+        let variadic = schema.variadic.as_deref();
+        let slots = fill_slots(&words, &open, variadic);
 
-        while i < args.len() {
-            let arg = &args[i];
-            if !options_ended && arg == "--" {
-                // POSIX end of options: every word after it is an operand,
-                // even one that looks like a flag. The marker is dropped.
-                options_ended = true;
-                i += 1;
-            } else if !options_ended && short_flag(arg) {
-                i += handle_short_flag(arg, args, i, data, errors, &short_to_long, schema, context);
-            } else if !options_ended && arg.starts_with("--") {
-                i += handle_long_flag(arg, args, i, data, errors, schema, context);
-            } else if filled < positional.len() {
-                let (consumed, slots) = handle_positional(
-                    arg,
-                    args,
-                    i,
-                    filled,
-                    data,
-                    errors,
-                    schema,
-                    options_ended,
-                    context,
-                );
-                i += consumed;
-                filled += slots;
-            } else {
-                i += self.handle_extra_arg(arg, data, errors, schema, context);
-            }
+        let mut variadic_words = Vec::new();
+        walk_tokens(
+            args,
+            schema,
+            &short_to_long,
+            data,
+            errors,
+            context,
+            |arg, i, data, errors| match slots.get(&i) {
+                None => {
+                    self.handle_extra_arg(arg, data, errors, schema, context);
+                }
+                Some(&slot) if Some(slot) == variadic => variadic_words.push(arg.to_owned()),
+                Some(&slot) => set_positional(slot, arg, data, errors, schema, context),
+            },
+        );
+        if let Some(key) = variadic
+            && open.iter().any(|name| name.as_str() == key)
+        {
+            set_variadic(key, &variadic_words, data, errors, schema);
         }
     }
 
@@ -1303,38 +1312,73 @@ fn parse_long_flag(
     }
 }
 
-/// Returns how many words the positional took, and how many slots it
-/// filled.
+/// Apply each option to `data`, and pass every other word, with its index,
+/// to `on_word`.
 #[allow(clippy::too_many_arguments)]
-fn handle_positional(
-    arg: &str,
+fn walk_tokens(
     args: &[String],
-    i: usize,
-    slot: usize,
+    schema: &Schema,
+    short_to_long: &IndexMap<String, String>,
     data: &mut Map<String, Value>,
     errors: &mut Vec<String>,
-    schema: &Schema,
-    options_ended: bool,
     context: &Context<'_>,
-) -> (usize, usize) {
-    let names = &schema.positional;
-    let key = &names[slot];
-    if schema.variadic.as_ref() != Some(key) {
-        set_positional(key, arg, data, errors, schema, context);
-        return (1, 1);
+    mut on_word: impl FnMut(&str, usize, &mut Map<String, Value>, &mut Vec<String>),
+) {
+    let mut options_ended = false;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if !options_ended && arg == "--" {
+            // POSIX end of options: every word after it is an operand, even
+            // one that looks like a flag. The marker is dropped.
+            options_ended = true;
+            i += 1;
+        } else if !options_ended && short_flag(arg) {
+            i += handle_short_flag(arg, args, i, data, errors, short_to_long, schema, context);
+        } else if !options_ended && arg.starts_with("--") {
+            i += handle_long_flag(arg, args, i, data, errors, schema, context);
+        } else {
+            on_word(arg, i, data, errors);
+            i += 1;
+        }
     }
+}
 
-    // The variadic takes a run of words, and the positionals after it take
-    // the run's last words, one each (`cp a b dir/`).
-    let (consumed, words) = collect_run(args, i, options_ended);
-    let after = &names[slot + 1..];
-    let count = after.len().min(words.len());
-    let (own, rest) = words.split_at(words.len() - count);
-    set_variadic(key, own, data, errors, schema);
-    for (name, word) in after.iter().zip(rest) {
-        set_positional(name, word, data, errors, schema, context);
-    }
-    (consumed, 1 + after.len())
+/// The open positional each word fills, by the word's index: in order, but
+/// from the variadic on, the positionals after it take the last words, one
+/// each (`cp a b dir/`), and the variadic the words between. With too few
+/// words, the positionals without a `*` fill first. A word that fills none
+/// is left out.
+fn fill_slots<'a>(
+    words: &[usize],
+    open: &[&'a String],
+    variadic: Option<&str>,
+) -> HashMap<usize, &'a str> {
+    let Some(v) = variadic.and_then(|name| open.iter().position(|n| n.as_str() == name)) else {
+        return words
+            .iter()
+            .copied()
+            .zip(open.iter().map(|n| n.as_str()))
+            .collect();
+    };
+    let (before, after) = (&open[..v], &open[v + 1..]);
+    let head = before.len().min(words.len());
+    let tail = after.len().min(words.len() - head);
+    let after_start = words.len() - tail;
+    words
+        .iter()
+        .enumerate()
+        .map(|(n, &word)| {
+            let slot = if n < head {
+                before[n]
+            } else if n >= after_start {
+                after[n - after_start]
+            } else {
+                open[v]
+            };
+            (word, slot.as_str())
+        })
+        .collect()
 }
 
 fn set_positional(
@@ -1348,28 +1392,6 @@ fn set_positional(
     let (coerced, error) = coerce_value(key, word, schema, context);
     errors.extend(error);
     set_nested_value(data, key, Some(coerced), errors);
-}
-
-/// The words a variadic takes from `start`, and how many words they span.
-/// The run is greedy: it takes every word literally, `:` and `=` and
-/// negative numbers included, and stops only at a real flag, which is then
-/// parsed as one. A `--` in the run is dropped, and after `--` it takes
-/// flags too.
-fn collect_run(args: &[String], start: usize, mut passthrough: bool) -> (usize, Vec<String>) {
-    let mut words = Vec::new();
-    let mut i = start;
-    while i < args.len() {
-        let arg = &args[i];
-        if !passthrough && arg == "--" {
-            passthrough = true;
-        } else if !passthrough && flag_like(arg) {
-            break;
-        } else {
-            words.push(arg.clone());
-        }
-        i += 1;
-    }
-    (i - start, words)
 }
 
 fn set_variadic(

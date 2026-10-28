@@ -538,9 +538,6 @@ fn clamp(cursor: isize, len: usize) -> usize {
 fn flag_name_candidates(schema: &Schema, partial: &str) -> Vec<String> {
     let mut tokens = vec!["--help".to_owned(), "-h".to_owned()];
     for (name, prop) in props_of(schema).into_iter().flatten() {
-        if schema.positional.contains(name) {
-            continue;
-        }
         tokens.push(format!("--{name}"));
         if let Some(short) = &prop.short {
             tokens.push(format!("-{short}"));
@@ -554,20 +551,25 @@ fn flag_name_candidates(schema: &Schema, partial: &str) -> Vec<String> {
 /// the positionals after it, so the word under the cursor, the last so far,
 /// is one of theirs, or the variadic's when none follows it.
 fn positional_at(schema: &Schema, args: &[String], cursor: isize) -> Option<String> {
-    let names = &schema.positional;
+    let named = named_fields(schema, args, cursor);
+    let names: Vec<&String> = schema
+        .positional
+        .iter()
+        .filter(|name| !named.contains_key(name.as_str()))
+        .collect();
     let limit = cursor.min(args.len() as isize);
     let slot = positional_index(schema, args, limit);
     let variadic = schema
         .variadic
         .as_ref()
-        .and_then(|name| names.iter().position(|n| n == name));
+        .and_then(|name| names.iter().position(|n| *n == name));
     match variadic {
         Some(variadic) if slot >= variadic => {
             let after = names.len() - 1 - variadic;
             let run = slot - variadic + 1;
             Some(names[variadic + run.min(after)].clone())
         }
-        _ => names.get(slot).cloned(),
+        _ => names.get(slot).map(|name| (*name).clone()),
     }
 }
 
@@ -666,6 +668,25 @@ fn collect_arguments(schema: &Schema, args: &[String]) -> IndexMap<String, Strin
         }
     }
     result
+}
+
+/// The fields the line's flags set, apart from the word under the cursor.
+/// The parser skips these positionals when it gives out the bare words.
+fn named_fields(schema: &Schema, args: &[String], cursor: isize) -> IndexMap<String, String> {
+    let mut fields = IndexMap::new();
+    let mut i = 0;
+    while i < args.len() {
+        let token = &args[i];
+        if token == "--" {
+            break;
+        }
+        if i as isize != cursor && flag_token(token) {
+            i += collect_flag(schema, args, i, &mut fields);
+        } else {
+            i += 1;
+        }
+    }
+    fields
 }
 
 /// Collect the fields a flag word sets, with the next word when it is the

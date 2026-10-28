@@ -1,1 +1,1 @@
-d1c6fbd52b330a7ffc9b50f8ba7af3c6e08218ba 2026-10-28 Mark the variadic positional with *, and let positionals follow it
+88b0dae0cfac2012344fa6771b0b036a9262baf0 2026-10-28 Skip a positional given by name, wherever the option is

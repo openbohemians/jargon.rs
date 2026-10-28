@@ -77,7 +77,8 @@ Ported so far, with every recorded case for it passing:
   combined as getopt combines them (`-lw80`), array options given more than
   once or split at a named `separator` (`"separator": "comma"`), positionals
   and a variadic marked with `*`, anywhere among them (`["sources*", "dest"]`),
-  `--`, `-` as a value, negative numbers,
+  a positional given as an option skipped (`grep -e foo a b`), `--`, `-` as a
+  value, negative numbers,
   nested `--server.port`, typo suggestions, and options as JSON on standard
   input (`-@`)
 - Subcommands: nested CLIs, defaults, abbreviations, and multi-document

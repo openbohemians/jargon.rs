@@ -570,12 +570,47 @@ fn flag_token(token: &str) -> bool {
 }
 
 /// The field a flag sets when it takes the next word as its value (`--name`,
-/// `-n`); None for booleans, `--name=value`, and words that aren't flags.
+/// `-n`, or `-ln`, a cluster ending in it); None for booleans, a value in the
+/// same word (`--name=value`, `-n5`), and words that aren't flags.
 fn value_flag_field(schema: &Schema, token: &str) -> Option<String> {
-    if !flag_token(token) || token.contains('=') {
+    if !flag_token(token) {
         return None;
     }
-    field_for_flag(token, schema).filter(|field| !boolean(schema, field))
+    if token.starts_with("--") {
+        if token.contains('=') {
+            return None;
+        }
+        return field_for_flag(token, schema).filter(|field| !boolean(schema, field));
+    }
+    match short_cluster(schema, token) {
+        (_, Some(field), None) => Some(field),
+        _ => None,
+    }
+}
+
+/// Read a word of short flags as the parser does: each letter is a flag
+/// until one that takes a value, which takes the rest of the word (`-lw80`),
+/// or the next word when it ends this one (`-lw`, value None). Returns the
+/// boolean fields, then the value-taking field and its value. An unknown
+/// letter ends the reading.
+fn short_cluster(schema: &Schema, token: &str) -> (Vec<String>, Option<String>, Option<String>) {
+    let mut booleans = Vec::new();
+    for (n, c) in token.char_indices().skip(1) {
+        let Some(field) = field_for_flag(&format!("-{c}"), schema) else {
+            break;
+        };
+        if boolean(schema, &field) {
+            booleans.push(field);
+        } else {
+            let rest = &token[n + c.len_utf8()..];
+            return (
+                booleans,
+                Some(field),
+                (!rest.is_empty()).then(|| rest.to_owned()),
+            );
+        }
+    }
+    (booleans, None, None)
 }
 
 fn collect_arguments(schema: &Schema, args: &[String]) -> IndexMap<String, String> {
@@ -586,31 +621,64 @@ fn collect_arguments(schema: &Schema, args: &[String]) -> IndexMap<String, Strin
         if token == "--" {
             break; // the rest are operands
         }
-        if token.starts_with("--")
-            && let Some((key, value)) = token[2..].split_once('=')
-        {
-            result.insert(key.to_owned(), value.to_owned());
-        } else if flag_token(token) {
-            let field = field_for_flag(token, schema);
-            match field
-                .as_deref()
-                .filter(|f| !boolean(schema, f))
-                .zip(args.get(i + 1))
-            {
-                Some((field, value)) => {
-                    result.insert(field.to_owned(), value.clone());
-                    i += 1;
-                }
-                None => {
-                    result.insert(field.unwrap_or_else(|| token.clone()), "true".to_owned());
-                }
+        if flag_token(token) {
+            i += collect_flag(schema, args, i, &mut result);
+        } else {
+            if let Some((key, value)) = token.split_once('=') {
+                result.insert(key.to_owned(), value.to_owned());
             }
-        } else if let Some((key, value)) = token.split_once('=') {
-            result.insert(key.to_owned(), value.to_owned());
+            i += 1;
         }
-        i += 1;
     }
     result
+}
+
+/// Collect the fields a flag word sets, with the next word when it is the
+/// flag's value. Returns how many words it took.
+fn collect_flag(
+    schema: &Schema,
+    args: &[String],
+    i: usize,
+    result: &mut IndexMap<String, String>,
+) -> usize {
+    let token = &args[i];
+    let (booleans, field, value) = flag_fields(schema, token);
+    let none_set = booleans.is_empty();
+    for name in booleans {
+        result.insert(name, "true".to_owned());
+    }
+    match (field, value) {
+        (Some(field), Some(value)) => {
+            result.insert(field, value);
+            1
+        }
+        (Some(field), None) if i + 1 < args.len() => {
+            result.insert(field, args[i + 1].clone());
+            2
+        }
+        (field, _) => {
+            // An unknown flag is kept under its word.
+            if field.is_some() || none_set {
+                result.insert(field.unwrap_or_else(|| token.clone()), "true".to_owned());
+            }
+            1
+        }
+    }
+}
+
+/// The fields a flag word sets, as `short_cluster` returns them, for a long
+/// flag (`--all`, `--name`, `--name=value`) too.
+fn flag_fields(schema: &Schema, token: &str) -> (Vec<String>, Option<String>, Option<String>) {
+    let Some(name) = token.strip_prefix("--") else {
+        return short_cluster(schema, token);
+    };
+    if let Some((name, value)) = name.split_once('=') {
+        return (Vec::new(), Some(name.to_owned()), Some(value.to_owned()));
+    }
+    match field_for_flag(token, schema) {
+        Some(field) if boolean(schema, &field) => (vec![field], None, None),
+        field => (Vec::new(), field, None),
+    }
 }
 
 /// The root's own properties: completion doesn't follow a root `$ref`.

@@ -1,1 +1,1 @@
-cb6474643004756c7064306949f0677ac9aaf736 2026-10-26 Spec more of config sections and config formats
+4ae4bf4dbdf6d09c7069be2a7ee5ef246c8c8e46 2026-10-27 Read repeated arrays, a lone -, and attached short values as getopt does

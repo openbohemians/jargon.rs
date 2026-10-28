@@ -936,7 +936,7 @@ impl Cli {
     ) -> usize {
         if let Some((key, value, error)) = self.parse_argument(arg, schema, context) {
             errors.extend(error);
-            set_nested_value(data, &key, Some(value), errors);
+            set_option_value(data, &key, Some(value), errors, schema);
         } else if self.bare_assignment && arg.contains('=') {
             // An assignment to a property that doesn't exist: suggest one.
             let unknown = arg.split('=').next().unwrap_or_default();
@@ -1084,10 +1084,11 @@ fn short_flag(arg: &str) -> bool {
 }
 
 /// A word that would end a flag's value or a variadic list: a leading dash,
-/// except on a negative number.
+/// except on a negative number or a lone `-`, which by convention names
+/// standard input or output as a file.
 fn flag_like(arg: &str) -> bool {
     let mut chars = arg.chars();
-    chars.next() == Some('-') && !chars.next().is_some_and(|c| c.is_ascii_digit())
+    chars.next() == Some('-') && chars.next().is_some_and(|c| !c.is_ascii_digit())
 }
 
 fn boolean_value(arg: &str) -> bool {
@@ -1108,64 +1109,98 @@ fn handle_short_flag(
     schema: &Schema,
     context: &Context<'_>,
 ) -> usize {
-    let keys: Vec<char> = arg.chars().skip(1).collect();
-    if keys.len() == 1 {
-        let short = keys[0].to_string();
-        match short_to_long.get(&short) {
-            Some(long) => {
-                let (key, value, consumed, error) =
-                    parse_long_flag(&format!("--{long}"), args, i, schema, context);
-                if let Some(key) = key {
-                    errors.extend(error);
-                    set_nested_value(data, &key, value, errors);
-                }
-                consumed
-            }
-            None => {
-                let shorts: Vec<String> = short_to_long.keys().cloned().collect();
-                errors.push(unknown_option_error(&short, &shorts, "-", None));
-                1
-            }
-        }
+    if arg.chars().count() == 2 {
+        handle_single_short_flag(
+            &arg[1..],
+            args,
+            i,
+            data,
+            errors,
+            short_to_long,
+            schema,
+            context,
+        )
     } else {
-        handle_combined_short_flags(arg, &keys, data, errors, short_to_long, schema);
-        1
+        handle_combined_short_flags(arg, args, i, data, errors, short_to_long, schema, context)
     }
 }
 
-/// `-abc`: several boolean short flags at once.
-fn handle_combined_short_flags(
-    arg: &str,
-    keys: &[char],
+#[allow(clippy::too_many_arguments)]
+fn handle_single_short_flag(
+    short: &str,
+    args: &[String],
+    i: usize,
     data: &mut Map<String, Value>,
     errors: &mut Vec<String>,
     short_to_long: &IndexMap<String, String>,
     schema: &Schema,
-) {
-    for c in keys {
-        match short_to_long.get(&c.to_string()) {
-            None => {
-                let shorts: Vec<String> = short_to_long.keys().cloned().collect();
-                let context = format!("in '{arg}'");
-                errors.push(unknown_option_error(
-                    &c.to_string(),
-                    &shorts,
-                    "-",
-                    Some(&context),
-                ));
-                return;
+    context: &Context<'_>,
+) -> usize {
+    match short_to_long.get(short) {
+        Some(long) => {
+            let (key, value, consumed, error) =
+                parse_long_flag(&format!("--{long}"), args, i, schema, context);
+            if let Some(key) = key {
+                errors.extend(error);
+                set_option_value(data, &key, value, errors, schema);
             }
-            Some(long) if !boolean_property(long, schema) => {
-                errors.push(format!("Cannot combine non-boolean flag '-{c}' in '{arg}'"));
-                return;
-            }
-            Some(_) => {}
+            consumed
+        }
+        None => {
+            let shorts: Vec<String> = short_to_long.keys().cloned().collect();
+            errors.push(unknown_option_error(short, &shorts, "-", None));
+            1
         }
     }
-    for c in keys {
-        let long = short_to_long[&c.to_string()].clone();
-        set_nested_value(data, &long, Some(Value::Bool(true)), errors);
+}
+
+/// A cluster of short flags, read as getopt reads one: each letter is a flag
+/// until one that takes a value, which takes the rest of the cluster (`-w80`,
+/// `-lw80`), or the next argument when it ends the cluster (`-lw 80`).
+/// Returns how many words it took.
+#[allow(clippy::too_many_arguments)]
+fn handle_combined_short_flags(
+    arg: &str,
+    args: &[String],
+    i: usize,
+    data: &mut Map<String, Value>,
+    errors: &mut Vec<String>,
+    short_to_long: &IndexMap<String, String>,
+    schema: &Schema,
+    context: &Context<'_>,
+) -> usize {
+    for (n, c) in arg.char_indices().skip(1) {
+        let short = c.to_string();
+        let Some(long) = short_to_long.get(&short) else {
+            let shorts: Vec<String> = short_to_long.keys().cloned().collect();
+            let context = format!("in '{arg}'");
+            errors.push(unknown_option_error(&short, &shorts, "-", Some(&context)));
+            return 1;
+        };
+        if boolean_property(long, schema) {
+            set_nested_value(data, long, Some(Value::Bool(true)), errors);
+            continue;
+        }
+
+        let rest = &arg[n + c.len_utf8()..];
+        if rest.is_empty() {
+            return handle_single_short_flag(
+                &short,
+                args,
+                i,
+                data,
+                errors,
+                short_to_long,
+                schema,
+                context,
+            );
+        }
+        let (coerced, error) = coerce_value(long, rest, schema, context);
+        errors.extend(error);
+        set_option_value(data, long, Some(coerced), errors, schema);
+        return 1;
     }
+    1
 }
 
 fn handle_long_flag(
@@ -1181,7 +1216,7 @@ fn handle_long_flag(
     match key {
         Some(key) => {
             errors.extend(error);
-            set_nested_value(data, &key, value, errors);
+            set_option_value(data, &key, value, errors, schema);
         }
         None => {
             let name = &arg.split('=').next().unwrap_or_default()[2..];
@@ -1490,6 +1525,37 @@ fn expand_tilde(path: &str, context: &Context<'_>) -> String {
     } else {
         path.to_owned()
     }
+}
+
+/// Store an option's value. An array option given more than once collects
+/// the items of each (`-I a -I b`), as getopt programs do; any other option
+/// keeps the last value given.
+fn set_option_value(
+    data: &mut Map<String, Value>,
+    key: &str,
+    value: Option<Value>,
+    errors: &mut Vec<String>,
+    schema: &Schema,
+) {
+    let value = match (value, nested_value(data, key)) {
+        (Some(Value::Array(items)), Some(Value::Array(earlier)))
+            if find_property(key, schema).is_some_and(|p| p.kind == Type::Array) =>
+        {
+            Some(Value::Array(earlier.iter().cloned().chain(items).collect()))
+        }
+        (value, _) => value,
+    };
+    set_nested_value(data, key, value, errors);
+}
+
+fn nested_value<'a>(data: &'a Map<String, Value>, key: &str) -> Option<&'a Value> {
+    let parts: Vec<&str> = key.split('.').collect();
+    let (last, path) = parts.split_last().expect("split yields at least one part");
+    let mut current = data;
+    for part in path {
+        current = current.get(*part)?.as_object()?;
+    }
+    current.get(*last)
 }
 
 /// Store a value under a dotted key, making the objects on the way

@@ -898,8 +898,11 @@ impl Cli {
 
     /// Walk the argument words, filling `data` and `errors`. A first walk
     /// finds the positionals set by name and the bare words, so that the
-    /// words fill the other positionals wherever the options are among them
-    /// (`grep a -e foo b`); the second applies everything in order.
+    /// words go to the positionals with room, wherever the options are among
+    /// them (`grep a -e foo b`); the second applies everything in order. A
+    /// positional that holds one value is full once it's given; the variadic
+    /// never is, and its words add to what an option gave it
+    /// (`cp --sources a b dir/`).
     fn consume_tokens(
         &self,
         args: &[String],
@@ -920,15 +923,14 @@ impl Cli {
             context,
             |_, i, _, _| words.push(i),
         );
+        let variadic = schema.variadic.as_deref();
         let open: Vec<&String> = schema
             .positional
             .iter()
-            .filter(|name| nested_value(&named, name).is_none())
+            .filter(|name| Some(name.as_str()) == variadic || nested_value(&named, name).is_none())
             .collect();
-        let variadic = schema.variadic.as_deref();
         let slots = fill_slots(&words, &open, variadic);
 
-        let mut variadic_words = Vec::new();
         walk_tokens(
             args,
             schema,
@@ -940,15 +942,12 @@ impl Cli {
                 None => {
                     self.handle_extra_arg(arg, data, errors, schema, context);
                 }
-                Some(&slot) if Some(slot) == variadic => variadic_words.push(arg.to_owned()),
+                Some(&slot) if Some(slot) == variadic => {
+                    add_variadic(slot, arg, data, errors, schema)
+                }
                 Some(&slot) => set_positional(slot, arg, data, errors, schema, context),
             },
         );
-        if let Some(key) = variadic
-            && open.iter().any(|name| name.as_str() == key)
-        {
-            set_variadic(key, &variadic_words, data, errors, schema);
-        }
     }
 
     fn handle_extra_arg(
@@ -1394,9 +1393,11 @@ fn set_positional(
     set_nested_value(data, key, Some(coerced), errors);
 }
 
-fn set_variadic(
+/// Add a word's items to the variadic, after those it has, as a repeated
+/// array option adds them.
+fn add_variadic(
     key: &str,
-    words: &[String],
+    word: &str,
     data: &mut Map<String, Value>,
     errors: &mut Vec<String>,
     schema: &Schema,
@@ -1404,14 +1405,12 @@ fn set_variadic(
     let prop = find_property(key, schema);
     let item_type = prop.and_then(|p| p.items.as_ref()).map(|items| items.kind);
     let mut items = Vec::new();
-    for word in words {
-        for piece in array_pieces(word, prop) {
-            let (coerced, error) = coerce_scalar(key, &piece, item_type);
-            errors.extend(error);
-            items.push(coerced);
-        }
+    for piece in array_pieces(word, prop) {
+        let (coerced, error) = coerce_scalar(key, &piece, item_type);
+        errors.extend(error);
+        items.push(coerced);
     }
-    set_nested_value(data, key, Some(Value::Array(items)), errors);
+    set_option_value(data, key, Some(Value::Array(items)), errors, schema);
 }
 
 /// The items a word gives an array: the word itself, or its pieces when the

@@ -555,7 +555,9 @@ fn positional_at(schema: &Schema, args: &[String], cursor: isize) -> Option<Stri
     let names: Vec<&String> = schema
         .positional
         .iter()
-        .filter(|name| !named.contains_key(name.as_str()))
+        .filter(|name| {
+            schema.variadic.as_ref() == Some(*name) || !named.contains_key(name.as_str())
+        })
         .collect();
     let limit = cursor.min(args.len() as isize);
     let slot = positional_index(schema, args, limit);
@@ -671,7 +673,8 @@ fn collect_arguments(schema: &Schema, args: &[String]) -> IndexMap<String, Strin
 }
 
 /// The fields the line's flags set, apart from the word under the cursor.
-/// The parser skips these positionals when it gives out the bare words.
+/// The parser skips these positionals, but the variadic, when it gives out
+/// the bare words.
 fn named_fields(schema: &Schema, args: &[String], cursor: isize) -> IndexMap<String, String> {
     let mut fields = IndexMap::new();
     let mut i = 0;

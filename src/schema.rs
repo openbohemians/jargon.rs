@@ -20,8 +20,8 @@ pub enum Type {
     Number,
     /// `"boolean"`: a flag, true when given without a value.
     Boolean,
-    /// `"array"`: a list, given comma-separated (`--tags a,b`), or a
-    /// variadic positional.
+    /// `"array"`: a list, an item each time its option is given (`-I a -I b`)
+    /// or several split at a [`Separator`], or a variadic positional.
     Array,
     /// `"object"`: a group of options, given as `--group.key`.
     Object,
@@ -61,6 +61,62 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.name())
     }
+}
+
+/// What a `separator` keyword names: the characters at which an array
+/// option's value is split into items (`"separator": "comma"` reads
+/// `-f 1,3` as `[1, 3]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Separator {
+    /// `,`
+    Comma,
+    /// `:`
+    Colon,
+    /// `;`
+    Semicolon,
+    /// Any whitespace: spaces, tabs, newlines.
+    Whitespace,
+}
+
+impl Separator {
+    const ALL: [Separator; 4] = [
+        Separator::Comma,
+        Separator::Colon,
+        Separator::Semicolon,
+        Separator::Whitespace,
+    ];
+
+    /// The separator's name in a schema (`"comma"`), which help uses too.
+    pub fn name(self) -> &'static str {
+        match self {
+            Separator::Comma => "comma",
+            Separator::Colon => "colon",
+            Separator::Semicolon => "semicolon",
+            Separator::Whitespace => "whitespace",
+        }
+    }
+
+    /// Whether a value splits at `c`.
+    pub fn splits_at(self, c: char) -> bool {
+        match self {
+            Separator::Comma => c == ',',
+            Separator::Colon => c == ':',
+            Separator::Semicolon => c == ';',
+            Separator::Whitespace => c.is_whitespace(),
+        }
+    }
+}
+
+/// Split an array option's value at its separators, trimming each piece and
+/// dropping empty ones, so `"a, b,,c"` is `["a", "b", "c"]`.
+pub(crate) fn split(value: &str, separators: &[Separator]) -> Vec<String> {
+    value
+        .split(|c| separators.iter().any(|s| s.splits_at(c)))
+        .map(str::trim)
+        .filter(|piece| !piece.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// A `pattern` keyword: its regex and the source it was compiled from.
@@ -117,6 +173,9 @@ pub struct Property {
     pub short: Option<String>,
     /// An environment variable that supplies the value.
     pub env: Option<String>,
+    /// The `separator` keyword: where an array's value splits into items.
+    /// None takes each value as one item.
+    pub separator: Option<Vec<Separator>>,
     /// The `minimum` keyword: the least value allowed.
     pub minimum: Option<f64>,
     /// The `maximum` keyword: the greatest value allowed.
@@ -175,6 +234,7 @@ impl Property {
             reference: string(obj, "$ref"),
             short: string(obj, "short"),
             env: string(obj, "env"),
+            separator: parse_separator(name, kind, obj)?,
             minimum: obj.get("minimum").and_then(Value::as_f64),
             maximum: obj.get("maximum").and_then(Value::as_f64),
             exclusive_minimum: obj.get("exclusiveMinimum").and_then(Value::as_f64),
@@ -248,6 +308,48 @@ fn resolve_type(name: &str, obj: &Map<String, Value>) -> Result<Type, Error> {
         }
     }
     Ok(kind)
+}
+
+/// `separator`: one name or a list of them, on an array.
+fn parse_separator(
+    name: &str,
+    kind: Type,
+    obj: &Map<String, Value>,
+) -> Result<Option<Vec<Separator>>, Error> {
+    let Some(value) = obj.get("separator") else {
+        return Ok(None);
+    };
+    if obj.contains_key("$ref") {
+        return Err(Error::Schema(format!(
+            "Schema '{name}' has 'separator' beside '$ref' (put it in the referenced schema)"
+        )));
+    }
+    if kind != Type::Array {
+        return Err(Error::Schema(format!(
+            "Schema '{name}' has 'separator' but isn't an array (did you mean type: array?)"
+        )));
+    }
+
+    let entries = value
+        .as_array()
+        .map_or(std::slice::from_ref(value), Vec::as_slice);
+    let mut separators: Vec<Separator> = Vec::new();
+    for entry in entries {
+        let word = entry
+            .as_str()
+            .map_or_else(|| entry.to_string(), String::from);
+        let Some(separator) = Separator::ALL.into_iter().find(|s| s.name() == word) else {
+            let names: Vec<_> = Separator::ALL.iter().map(|s| s.name()).collect();
+            return Err(Error::Schema(format!(
+                "Schema '{name}' has unknown separator '{word}' (use {})",
+                names.join(", ")
+            )));
+        };
+        if !separators.contains(&separator) {
+            separators.push(separator);
+        }
+    }
+    Ok((!separators.is_empty()).then_some(separators))
 }
 
 fn parse_properties(

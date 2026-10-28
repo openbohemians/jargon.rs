@@ -43,7 +43,7 @@ pub use cli::{Cli, ParseOptions, Subcommand};
 pub use completion::{COMPLETE_VERB, CompletionContext, Shell};
 pub use config::{ConfigExtensions, ConfigOptions};
 pub use parsed::Parsed;
-pub use schema::{Pattern, Property, Schema, Type};
+pub use schema::{Pattern, Property, Schema, Separator, Type};
 pub use utility::{flatten, merge};
 pub use validator::validate;
 

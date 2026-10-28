@@ -1,1 +1,1 @@
-4ae4bf4dbdf6d09c7069be2a7ee5ef246c8c8e46 2026-10-27 Read repeated arrays, a lone -, and attached short values as getopt does
+5496d5638a9ecbc213d88922cb897d8a5e55cb88 2026-10-28 Split an array's value only at the separators its schema names

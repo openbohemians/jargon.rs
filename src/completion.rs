@@ -485,23 +485,50 @@ impl Engine<'_> {
         partial: &str,
         args: &[String],
     ) -> Option<Vec<String>> {
+        let prop = props_of(schema).and_then(|props| props.get(field));
+        let head = separated_head(partial, prop);
+        let item = &partial[head.len()..];
+
         let key = join(path, field);
-        if let Some(completer) = self.cli.completers.get(&key) {
+        let candidates = if let Some(completer) = self.cli.completers.get(&key) {
             let context = CompletionContext {
-                partial: partial.to_owned(),
+                partial: item.to_owned(),
                 words: self.words.to_vec(),
                 subcommand: (!path.is_empty()).then(|| path.to_owned()),
                 arguments: collect_arguments(schema, args),
             };
-            return Some(completer(&context));
-        }
-
-        let choices = props_of(schema)?.get(field)?.enum_values.as_ref()?;
-        Some(filter(
-            choices.iter().map(values::display).collect(),
-            partial,
-        ))
+            completer(&context)
+        } else {
+            let prop = prop?;
+            let choices = prop.enum_values.as_ref().or_else(|| {
+                (prop.kind == Type::Array)
+                    .then(|| prop.items.as_ref()?.enum_values.as_ref())
+                    .flatten()
+            })?;
+            filter(choices.iter().map(values::display).collect(), item)
+        };
+        Some(
+            candidates
+                .into_iter()
+                .map(|value| format!("{head}{value}"))
+                .collect(),
+        )
     }
+}
+
+/// What precedes the item being typed in an array's value: everything up to
+/// its last separator, and the blanks after it (`pid, ` in `pid, co`). Empty
+/// when the property names no separators.
+fn separated_head<'a>(partial: &'a str, prop: Option<&Property>) -> &'a str {
+    let Some(separators) = prop.and_then(|p| p.separator.as_deref()) else {
+        return "";
+    };
+    let end = partial
+        .char_indices()
+        .rfind(|&(_, c)| separators.iter().any(|s| s.splits_at(c)))
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let rest = &partial[end..];
+    &partial[..end + rest.len() - rest.trim_start().len()]
 }
 
 fn clamp(cursor: isize, len: usize) -> usize {

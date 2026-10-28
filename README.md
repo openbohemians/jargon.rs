@@ -75,7 +75,8 @@ Ported so far, with every recorded case for it passing:
 
 - Parsing: `--flag value`, `--flag=value`, `key=value`, short flags
   combined as getopt combines them (`-lw80`), array options given more than
-  once, positionals and variadics, `--`, `-` as a value, negative numbers,
+  once or split at a named `separator` (`"separator": "comma"`), positionals
+  and variadics, `--`, `-` as a value, negative numbers,
   nested `--server.port`, typo suggestions, and options as JSON on standard
   input (`-` alone)
 - Subcommands: nested CLIs, defaults, abbreviations, and multi-document

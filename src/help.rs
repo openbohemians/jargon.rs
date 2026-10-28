@@ -219,6 +219,17 @@ fn help_text_for(prop: &Property, required: bool) -> String {
     {
         parts.push(description.to_owned());
     }
+    if let Some(separators) = &prop.separator {
+        let names: Vec<String> = separators
+            .iter()
+            .map(|s| format!("{}-", s.name()))
+            .collect();
+        let listed = match names.split_last() {
+            Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+            _ => names.concat(),
+        };
+        parts.push(format!("({listed}separated)"));
+    }
     if let Some(values) = prop.enum_values.as_ref().filter(|v| !v.is_empty()) {
         let values: Vec<_> = values.iter().map(help_value).collect();
         parts.push(format!("[{}]", values.join("|")));

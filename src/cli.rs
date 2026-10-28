@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 
 use crate::completion::{Completer, Shell};
 use crate::config::{ConfigParser, deep_merge};
-use crate::schema::{Property, Schema, Type};
+use crate::schema::{self, Property, Schema, Type};
 use crate::validator::{validate, validate_except};
 use crate::values;
 use crate::{Error, ParseError, Parsed};
@@ -1316,9 +1316,8 @@ fn collect_variadic(
     schema: &Schema,
     passthrough: bool,
 ) -> usize {
-    let item_type = find_property(key, schema)
-        .and_then(|p| p.items.as_ref())
-        .map(|items| items.kind);
+    let prop = find_property(key, schema);
+    let item_type = prop.and_then(|p| p.items.as_ref()).map(|items| items.kind);
     let mut items = Vec::new();
     let mut i = start;
     while i < args.len() {
@@ -1326,13 +1325,24 @@ fn collect_variadic(
         if !passthrough && flag_like(arg) {
             break;
         }
-        let (coerced, error) = coerce_scalar(key, arg, item_type);
-        errors.extend(error);
-        items.push(coerced);
+        for piece in array_pieces(arg, prop) {
+            let (coerced, error) = coerce_scalar(key, &piece, item_type);
+            errors.extend(error);
+            items.push(coerced);
+        }
         i += 1;
     }
     set_nested_value(data, key, Some(Value::Array(items)), errors);
     i - start
+}
+
+/// The items a word gives an array: the word itself, or its pieces when the
+/// property names separators.
+fn array_pieces(value: &str, prop: Option<&Property>) -> Vec<String> {
+    match prop.and_then(|p| p.separator.as_deref()) {
+        Some(separators) => schema::split(value, separators),
+        None => vec![value.to_owned()],
+    }
 }
 
 /// An unfilled variadic positional is an empty list.
@@ -1459,14 +1469,15 @@ fn coerce_value(
             coerce_scalar(key, value, Some(kind))
         }
         Some(Type::Array) => {
-            // Each item is coerced to the `items` type, as a variadic
+            // The value is one item, or several when the property names
+            // separators. Each is coerced to the `items` type, as a variadic
             // positional's are; the first that doesn't fit is reported.
             let item_type = prop.and_then(|p| p.items.as_ref()).map(|items| items.kind);
             let mut first_error = None;
-            let items = value
-                .split(',')
+            let items = array_pieces(value, prop)
+                .into_iter()
                 .map(|item| {
-                    let (coerced, error) = coerce_scalar(key, item.trim(), item_type);
+                    let (coerced, error) = coerce_scalar(key, &item, item_type);
                     first_error = first_error.take().or(error);
                     coerced
                 })

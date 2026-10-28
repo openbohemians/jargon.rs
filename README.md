@@ -78,7 +78,7 @@ Ported so far, with every recorded case for it passing:
   once or split at a named `separator` (`"separator": "comma"`), positionals
   and variadics, `--`, `-` as a value, negative numbers,
   nested `--server.port`, typo suggestions, and options as JSON on standard
-  input (`-` alone)
+  input (`-@`)
 - Subcommands: nested CLIs, defaults, abbreviations, and multi-document
   JSON with `$id` mixins and `allOf`
 - Validation, as `jargonaut::validate` too, and defaults from the schema, the

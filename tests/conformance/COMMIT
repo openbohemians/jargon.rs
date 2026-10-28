@@ -1,1 +1,1 @@
-5496d5638a9ecbc213d88922cb897d8a5e55cb88 2026-10-28 Split an array's value only at the separators its schema names
+10735d5996261b3fb42310378348d2878eff41bb 2026-10-28 Read options as JSON from stdin with -@, leaving - to name stdin

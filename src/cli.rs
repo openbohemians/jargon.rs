@@ -57,7 +57,7 @@ pub struct ParseOptions<'a> {
     /// keys over them, every one of them. A nested CLI's section holds its
     /// own subcommands' sections the same way.
     pub defaults: Option<&'a Map<String, Value>>,
-    /// The input read for the `-` form (options as JSON).
+    /// The input read for the `-@` form (options as JSON).
     pub stdin: Option<&'a mut dyn Read>,
     /// Looks up an environment variable.
     pub env: Option<&'a EnvLookup<'a>>,
@@ -270,7 +270,7 @@ impl Cli {
     }
 
     /// Set the JSON key that names the subcommand when the options come as
-    /// JSON on standard input (the `-` form). It is `"subcommand"` unless
+    /// JSON on standard input (the `-@` form). It is `"subcommand"` unless
     /// set.
     pub fn set_subcommand_key(&mut self, key: impl Into<String>) -> &mut Cli {
         self.subcommand_key = key.into();
@@ -309,7 +309,7 @@ impl Cli {
         self.default_subcommand.as_deref()
     }
 
-    /// The JSON key that names the subcommand in the `-` form.
+    /// The JSON key that names the subcommand in the `-@` form.
     pub fn subcommand_key(&self) -> &str {
         &self.subcommand_key
     }
@@ -679,8 +679,8 @@ impl Cli {
     }
 
     fn parse_with_subcommands(&self, args: &[String], context: &mut Context<'_>) -> Parsed {
-        // `prog -`: all options as JSON, the subcommand among them.
-        if args == ["-"] {
+        // `prog -@`: all options as JSON, the subcommand among them.
+        if args == [STDIN_JSON] {
             return self.parse_from_stdin_full(context);
         }
 
@@ -758,6 +758,22 @@ impl Cli {
         }
     }
 
+    /// The JSON form, given an outer CLI's JSON for this one: the
+    /// subcommand's name in it if this CLI has subcommands, its options if
+    /// not.
+    fn parse_json_scoped(&self, context: &mut Context<'_>) -> Parsed {
+        if !self.subcommands.is_empty() {
+            self.parse_from_stdin_full(context)
+        } else if let Some(schema) = &self.schema {
+            match read_stdin_json(context) {
+                Ok(data) => finish_json(data, schema, context),
+                Err(message) => Parsed::error(message),
+            }
+        } else {
+            panic!("CLI has no schema and no subcommands defined");
+        }
+    }
+
     fn parse_from_stdin_full(&self, context: &mut Context<'_>) -> Parsed {
         let mut data = match read_stdin_json(context) {
             Ok(data) => data,
@@ -788,7 +804,7 @@ impl Cli {
                     env: context.env,
                     input: &mut nested_input,
                 };
-                let parsed = cli.parse_args(&["-".to_owned()], &mut nested);
+                let parsed = cli.parse_json_scoped(&mut nested);
                 let full_name = join_names(name, parsed.subcommand.as_deref());
                 Parsed {
                     subcommand: Some(full_name),
@@ -843,8 +859,9 @@ impl Cli {
         path: Option<&str>,
         context: &mut Context<'_>,
     ) -> Parsed {
-        // `prog [sub] -`: this schema's options as JSON.
-        if args == ["-"] {
+        // `prog [sub] -@`: this schema's options as JSON, unless the schema
+        // claims -@ for an option of its own, as it may -h.
+        if args == [STDIN_JSON] && !build_short_map(schema).contains_key("@") {
             return match read_stdin_json(context) {
                 Ok(data) => finish_json(data, schema, context),
                 Err(message) => Parsed::error(message),
@@ -1083,6 +1100,10 @@ fn short_flag(arg: &str) -> bool {
             .is_some_and(|c| c != '-' && !c.is_ascii_digit())
 }
 
+/// Alone on a command line, or after the subcommand, it reads options as JSON
+/// from stdin (`prog mark -@ < options.json`).
+const STDIN_JSON: &str = "-@";
+
 /// A word that would end a flag's value or a variadic list: a leading dash,
 /// except on a negative number or a lone `-`, which by convention names
 /// standard input or output as a file.
@@ -1145,6 +1166,12 @@ fn handle_single_short_flag(
                 set_option_value(data, &key, value, errors, schema);
             }
             consumed
+        }
+        None if short == "@" => {
+            errors.push(format!(
+                "'{STDIN_JSON}' reads options as JSON from stdin, and takes no other arguments"
+            ));
+            1
         }
         None => {
             let shorts: Vec<String> = short_to_long.keys().cloned().collect();

@@ -93,7 +93,7 @@ fn options_supply_defaults_environment_and_stdin() {
 
     let mut stdin = Cursor::new(br#"{"name": "from-json"}"#.to_vec());
     let parsed = cli().parse_with(
-        ["app", "-"],
+        ["app", "-@"],
         ParseOptions {
             stdin: Some(&mut stdin),
             ..ParseOptions::default()

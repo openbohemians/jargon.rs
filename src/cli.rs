@@ -1747,7 +1747,8 @@ fn apply_property_defaults(
     }
 }
 
-/// An unknown option's message, with a suggestion when one is close.
+/// An unknown option's message, with a suggestion when one is close. It
+/// doesn't list the options: help does.
 fn unknown_option_error(
     input: &str,
     candidates: &[String],
@@ -1767,11 +1768,7 @@ fn unknown_option_error(
     } else if let Some(suggestion) = find_suggestion(input, candidates) {
         format!("Unknown option '{display}'{context}. Did you mean '{prefix}{suggestion}'?")
     } else {
-        let formatted: Vec<String> = candidates.iter().map(|c| format!("{prefix}{c}")).collect();
-        format!(
-            "Unknown option '{display}'{context}. Available: {}",
-            formatted.join(", ")
-        )
+        format!("Unknown option '{display}'{context}")
     }
 }
 
